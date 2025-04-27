@@ -1,5 +1,6 @@
 import { GoogleGenAI, Content, Tool, GenerationConfig } from "@google/genai";
-import { supabase } from "@/lib/supabaseClient";
+import { createSupabaseServerClient } from "@/lib/supabaseServerClient";
+import type { StoryGeneration } from "@/types/supabase";
 import { NextResponse } from 'next/server';
 
 const apiKey = process.env.GEMINI_API_KEY;
@@ -37,7 +38,7 @@ interface FetchedGeneration {
 }
 
 // Function to fetch full generation chain recursively
-async function fetchGenerationChain(id: string): Promise<FetchedGeneration[]> {
+async function fetchGenerationChain(id: string, supabase: ReturnType<typeof createSupabaseServerClient>): Promise<FetchedGeneration[]> {
     const { data, error } = await supabase
       .from('story_generations')
       .select('id, prompt, generated_story, parent_generation_id, iteration_feedback')
@@ -51,7 +52,7 @@ async function fetchGenerationChain(id: string): Promise<FetchedGeneration[]> {
 
     const currentGen = data as FetchedGeneration;
     if (currentGen.parent_generation_id) {
-        const parentChain = await fetchGenerationChain(currentGen.parent_generation_id);
+        const parentChain = await fetchGenerationChain(currentGen.parent_generation_id, supabase);
         return [...parentChain, currentGen]; // Append current to parent chain
     } else {
         return [currentGen]; // Base case: initial generation
@@ -60,17 +61,23 @@ async function fetchGenerationChain(id: string): Promise<FetchedGeneration[]> {
 
 
 export async function POST(request: Request) {
+  // Instantiate Supabase server client here
+  const supabase = createSupabaseServerClient();
+
+  // Get authenticated user
+  const { data: { user } } = await supabase.auth.getUser();
+
   try {
     const { synopsis, styleNote, length, useWebSearch, parentId, refinementFeedback, userIdentifier } = await request.json();
+
+    // Validation: Check for user OR identifier
+    if (!user && !userIdentifier) {
+      return NextResponse.json({ error: 'Missing user identifier or authentication' }, { status: 401 });
+    }
 
     if (!styleNote || !length || (!synopsis && !parentId)) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
-
-    // Basic validation for userIdentifier (optional, depends on if it's strictly required)
-    // if (!userIdentifier) {
-    //   return NextResponse.json({ error: 'Missing user identifier' }, { status: 400 });
-    // }
 
     // Create a local config for this request based on the base config
     const requestConfig: CustomGenerationConfig = { ...generationConfig };
@@ -86,7 +93,7 @@ export async function POST(request: Request) {
       if (!refinementFeedback) {
         return NextResponse.json({ error: 'Missing refinementFeedback for refinement request' }, { status: 400 });
       }
-      const fullChain = await fetchGenerationChain(parentId);
+      const fullChain = await fetchGenerationChain(parentId, supabase);
       if (fullChain.length === 0) {
         console.warn(`Could not fetch history for parentId ${parentId}. Proceeding without history.`);
       } else {
@@ -160,22 +167,29 @@ export async function POST(request: Request) {
         console.log("No grounding metadata or searchEntryPoint found.");
     }
 
-    // --- Save to Supabase --- 
+    // --- Prepare data for Supabase insert ---
+    const generationData: Partial<StoryGeneration> = {
+      synopsis: parentId ? null : synopsis,
+      style_note: styleNote,
+      requested_length: parseInt(length, 10),
+      use_web_search: !!useWebSearch,
+      prompt: currentPromptText,
+      generated_story: generatedText,
+      parent_generation_id: parentId,
+      iteration_feedback: refinementFeedback,
+    };
+
+    // Add user_id if logged in, otherwise add user_identifier
+    if (user) {
+      generationData.user_id = user.id;
+    } else {
+      generationData.user_identifier = userIdentifier;
+    }
+
+    // --- Save to Supabase ---
     const { data: insertData, error: supabaseError } = await supabase
       .from('story_generations')
-      .insert([
-        {
-          synopsis: parentId ? null : synopsis,
-          style_note: styleNote,
-          requested_length: parseInt(length, 10),
-          use_web_search: !!useWebSearch,
-          prompt: currentPromptText,
-          generated_story: generatedText,
-          parent_generation_id: parentId,
-          iteration_feedback: refinementFeedback,
-          user_identifier: userIdentifier
-        },
-      ])
+      .insert([generationData]) // Use the prepared object
       .select('id')
       .single();
 

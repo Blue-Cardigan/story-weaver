@@ -1,14 +1,16 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import type { StoryGeneration } from '@/lib/supabaseClient'; // Import the interface
-import EditableText from '@/components/EditableText'; // Import the EditableText component
-import Chat from '@/components/Chat'; // Import the Chat component
-import * as Diff from 'diff'; // Import diff library
-import { v4 as uuidv4 } from 'uuid'; // Import UUID for unique IDs
+import { useState, useEffect, useMemo } from 'react';
+import { createSupabaseBrowserClient } from '@/lib/supabaseBrowserClient';
+import type { StoryGeneration } from '@/types/supabase';
+import { User } from '@supabase/supabase-js';
+import EditableText from '@/components/EditableText';
+import Chat from '@/components/Chat';
+import AuthButton from '@/components/AuthButton';
+import AuthModal from '@/components/AuthModal';
+import * as Diff from 'diff';
+import { v4 as uuidv4 } from 'uuid';
 
-// Define the structure we expect the AI to return for edits
-// (Mirroring the definition in api/chat/route.ts)
 interface EditProposal {
   type: 'replace' | 'insert' | 'delete' | 'clarification' | 'none';
   explanation: string;
@@ -17,59 +19,114 @@ interface EditProposal {
   text?: string;
 }
 
-const USER_ID_KEY = 'storyWeaverUserId';
+const ANON_USER_ID_KEY = 'storyWeaverAnonUserId';
 
 export default function Home() {
-  const [userIdentifier, setUserIdentifier] = useState<string | null>(null); // <-- Add state for user ID
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [anonUserIdentifier, setAnonUserIdentifier] = useState<string | null>(null);
   const [synopsis, setSynopsis] = useState('');
   const [styleNote, setStyleNote] = useState('');
-  const [length, setLength] = useState<number | ''>(500); // Default length
+  const [length, setLength] = useState<number | ''>(500);
   const [useWebSearch, setUseWebSearch] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [generatedStory, setGeneratedStory] = useState<string | null>(null);
-  const [currentGenerationId, setCurrentGenerationId] = useState<string | null>(null); // Added state for ID
-  const [isAccepting, setIsAccepting] = useState(false); // Added state for accept loading
-  const [acceptStatus, setAcceptStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null); // Added state for accept status
-  const [refinementFeedback, setRefinementFeedback] = useState(''); // Added state for refinement input
-  const [isRefining, setIsRefining] = useState(false); // Added state for refinement loading
-  // TODO: Add state for grounding metadata if needed
-  // const [groundingMetadata, setGroundingMetadata] = useState<any | null>(null); 
+  const [currentGenerationId, setCurrentGenerationId] = useState<string | null>(null);
+  const [isAccepting, setIsAccepting] = useState(false);
+  const [acceptStatus, setAcceptStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [refinementFeedback, setRefinementFeedback] = useState('');
+  const [isRefining, setIsRefining] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pastGenerations, setPastGenerations] = useState<StoryGeneration[]>([]); // State for history
-  const [isLoadingHistory, setIsLoadingHistory] = useState(true); // State for history loading
-  const [historyError, setHistoryError] = useState<string | null>(null); // Separate error state for history
+  const [pastGenerations, setPastGenerations] = useState<StoryGeneration[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [isProcessingChange, setIsProcessingChange] = useState(false);
-  const [isChatCollapsed, setIsChatCollapsed] = useState(false); // State for chat visibility
-  const [diffForEditor, setDiffForEditor] = useState<Diff.Change[] | null>(null); // State to hold diff for EditableText
-  const [diffStartIndex, setDiffStartIndex] = useState<number | null>(null); // State for diff start index
-  const [diffEndIndex, setDiffEndIndex] = useState<number | null>(null);   // State for diff end index
+  const [isChatCollapsed, setIsChatCollapsed] = useState(false);
+  const [diffForEditor, setDiffForEditor] = useState<Diff.Change[] | null>(null);
+  const [diffStartIndex, setDiffStartIndex] = useState<number | null>(null);
+  const [diffEndIndex, setDiffEndIndex] = useState<number | null>(null);
 
-  // Get or set user identifier on mount
+  const supabase = useMemo(() => createSupabaseBrowserClient(), []);
+
   useEffect(() => {
-    let userId = localStorage.getItem(USER_ID_KEY);
-    if (!userId) {
-      userId = uuidv4();
-      localStorage.setItem(USER_ID_KEY, userId);
+    let anonId = localStorage.getItem(ANON_USER_ID_KEY);
+    if (!anonId) {
+      anonId = uuidv4();
+      localStorage.setItem(ANON_USER_ID_KEY, anonId);
     }
-    setUserIdentifier(userId);
-  }, []);
+    setAnonUserIdentifier(anonId);
 
-  // Function to fetch history
+    let isMounted = true;
+    const fetchInitialSession = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (isMounted) {
+          setUser(session?.user ?? null);
+          setAuthLoading(false);
+        }
+      } catch (error) {
+        console.error("Error fetching initial session:", error);
+        if (isMounted) setAuthLoading(false);
+      }
+    };
+
+    fetchInitialSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+       if (isMounted) {
+           const currentUser = session?.user ?? null;
+           setUser(currentUser);
+           setAuthLoading(false);
+           if (currentUser && event !== 'SIGNED_OUT') {
+               setIsAuthModalOpen(false);
+           }
+       }
+    });
+
+    return () => {
+      isMounted = false;
+      subscription?.unsubscribe();
+    };
+  }, [supabase]);
+
+  const effectiveIdentifier = user?.id ?? anonUserIdentifier;
+
   const fetchHistory = async () => {
-    if (!userIdentifier) return; // Don't fetch if ID isn't set yet
+    if (authLoading || !effectiveIdentifier) {
+        console.log("Auth state/identifier not ready, skipping history fetch.");
+        return;
+    }
 
     setIsLoadingHistory(true);
     setHistoryError(null);
+    
+    const headers: HeadersInit = {};
+    let url = '/api/history';
+
+    if (user) {
+      // Logged-in user: API will use session cookie
+      // No extra params/headers needed as RLS uses auth.uid()
+    } else if (anonUserIdentifier) {
+      // Anonymous user: Pass identifier via query param (and maybe header for RLS)
+      url += `?user_identifier=${encodeURIComponent(anonUserIdentifier)}`;
+      // Header used by RLS policy for anonymous select
+      headers['X-User-Identifier'] = anonUserIdentifier; 
+    } else {
+      // Should not happen if logic above is correct
+      console.warn("Attempted to fetch history without user or anonymous identifier.");
+      setIsLoadingHistory(false);
+      return;
+    }
+
     try {
-      // Pass userIdentifier as query parameter
-      // Ensure userIdentifier is not null before encoding - added check above
-      const response = await fetch(`/api/history?user_identifier=${encodeURIComponent(userIdentifier)}`); 
+      const response = await fetch(url, { headers });
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || 'Failed to fetch history data');
       }
       setPastGenerations(data as StoryGeneration[]);
-    } catch (err) {
+    } catch (err) { 
       console.error("Failed to fetch history:", err);
       setHistoryError(err instanceof Error ? err.message : 'Could not load past generations.');
     } finally {
@@ -77,23 +134,31 @@ export default function Home() {
     }
   };
 
-  // Fetch history on component mount and when userIdentifier changes
   useEffect(() => {
-    if (userIdentifier) {
-      fetchHistory();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userIdentifier]); // <-- Re-run fetchHistory if userIdentifier changes
+     if (!authLoading && effectiveIdentifier) { 
+       fetchHistory();
+     }
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, effectiveIdentifier]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    
+    if (authLoading) {
+        setError('Authentication status is loading. Please wait.');
+        return;
+    }
+    if (!effectiveIdentifier) {
+        setError('Could not determine user or anonymous identifier. Please refresh.');
+        return;
+    }
+
     setIsLoading(true);
     setError(null);
     setGeneratedStory(null);
-    setCurrentGenerationId(null); // Reset ID on new submission
-    setAcceptStatus(null); // Reset accept status on new submission
-    setRefinementFeedback(''); // Clear refinement feedback on new generation
-    // setGroundingMetadata(null); // Reset metadata
+    setCurrentGenerationId(null);
+    setAcceptStatus(null);
+    setRefinementFeedback('');
 
     // Basic validation
     if (!synopsis.trim() || !styleNote.trim() || length === '') {
@@ -106,28 +171,25 @@ export default function Home() {
         setIsLoading(false);
         return;
     }
-    if (!userIdentifier) { // Add check for userIdentifier
-        setError('Could not determine user identifier. Please refresh the page.');
-        setIsLoading(false);
-        return;
+
+    const payload: any = {
+      synopsis,
+      styleNote,
+      length,
+      useWebSearch,
+    };
+
+    if (!user && anonUserIdentifier) {
+      payload.userIdentifier = anonUserIdentifier;
     }
 
     try {
-      // Call the API route
       const response = await fetch('/api/generate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          synopsis,
-          styleNote,
-          length,
-          useWebSearch,
-          userIdentifier, // <-- Add userIdentifier to the payload
-          // parentId: null, // Explicitly null for initial generation
-          // refinementFeedback: null, // Explicitly null for initial generation
-        }),
+        body: JSON.stringify(payload),
       });
 
       const result = await response.json();
@@ -186,30 +248,31 @@ export default function Home() {
 
   // --- Handler for Refine button ---
   const handleRefine = async () => {
-    if (!currentGenerationId || !refinementFeedback.trim() || isRefining || isAccepting || acceptStatus?.type === 'success' || !userIdentifier) { // Add check for userIdentifier
-        return; // Don't run if invalid state
+    if (!currentGenerationId || !refinementFeedback.trim() || isRefining || isAccepting || acceptStatus?.type === 'success' || !effectiveIdentifier) {
+        return;
     }
 
     setIsRefining(true);
-    setError(null); // Clear previous errors
-    setAcceptStatus(null); // Clear previous accept status
+    setError(null);
+    setAcceptStatus(null);
+
+    const payload: any = {
+        styleNote: styleNote, 
+        length: length, 
+        useWebSearch: useWebSearch, 
+        parentId: currentGenerationId, 
+        refinementFeedback: refinementFeedback,
+    };
+
+    if (!user && anonUserIdentifier) {
+      payload.userIdentifier = anonUserIdentifier;
+    }
 
     try {
       const response = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          // We need to send the original style note and length preference 
-          // (and potentially web search preference) along with the refinement.
-          // The API route should handle using these if provided with parentId.
-          styleNote: styleNote, 
-          length: length, 
-          useWebSearch: useWebSearch, 
-          parentId: currentGenerationId, 
-          refinementFeedback: refinementFeedback, 
-          userIdentifier: userIdentifier, // <-- Add userIdentifier to the payload
-          // synopsis is likely not needed here as context comes from parentId
-        }),
+        body: JSON.stringify(payload),
       });
 
       const result = await response.json();
@@ -219,16 +282,15 @@ export default function Home() {
       }
 
       if (result.story && result.generationId) {
-        setGeneratedStory(result.story); // Update story with refined version
-        setCurrentGenerationId(result.generationId); // Update ID to the new generation
-        setRefinementFeedback(''); // Clear the feedback input after successful refinement
+        setGeneratedStory(result.story);
+        setCurrentGenerationId(result.generationId);
+        setRefinementFeedback('');
       } else {
         throw new Error('Invalid response format from refinement API.');
       }
 
     } catch (err) {
         console.error('Refinement request failed:', err);
-        // Display refinement error using the main error state
         setError(err instanceof Error ? err.message : 'An unknown error occurred during refinement.');
     } finally {
       setIsRefining(false);
@@ -263,7 +325,7 @@ export default function Home() {
   // --- Function to apply edits from Chat (Now renamed) ---
   const handleAcceptProposal = (proposal: EditProposal) => {
     setGeneratedStory(prevStory => {
-        if (!prevStory) return ""; // Should not happen if chat is active, but safety check
+        if (!prevStory) return "";
 
         const { type, startIndex, endIndex, text } = proposal;
 
@@ -279,11 +341,8 @@ export default function Home() {
                         return prevStory.substring(0, start) + newText + prevStory.substring(end);
                     }
                     console.warn("Invalid indices for replace operation:", proposal);
-                    return prevStory; // Return original on invalid index
+                    return prevStory;
                 case 'insert':
-                     // For insert, assume startIndex is the insertion point if provided, otherwise append?
-                     // Let's assume insertion happens at startIndex. If not provided, maybe append? Or require it?
-                     // For now, let's require startIndex for insert. If missing, treat as clarification/error on backend.
                      if (start >= 0 && start <= prevStory.length) {
                         return prevStory.substring(0, start) + newText + prevStory.substring(start);
                     }
@@ -298,14 +357,12 @@ export default function Home() {
                 case 'clarification':
                 case 'none':
                 default:
-                    // No change to the story text for these types
                     console.log("No story change applied for type:", type);
                     return prevStory;
             }
         } catch (e) {
             console.error("Error applying edit:", e, proposal);
-            // Optionally set an error state specific to editing
-            return prevStory; // Return original story on error
+            return prevStory;
         }
 
     });
@@ -313,7 +370,6 @@ export default function Home() {
     setDiffForEditor(null);
     setDiffStartIndex(null);
     setDiffEndIndex(null);
-     // Maybe add a notification that the edit was applied
   };
 
   // --- Function to handle receiving a proposal from Chat ---
@@ -351,6 +407,11 @@ export default function Home() {
     setDiffEndIndex(null);
     // Note: The Chat component itself should handle clearing its internal message state
   };
+
+  // --- Function to open the auth modal --- 
+  const openAuthModal = () => setIsAuthModalOpen(true);
+  // --- Function to close the auth modal --- 
+  const closeAuthModal = () => setIsAuthModalOpen(false);
 
   return (
     <main className={`flex min-h-screen flex-col justify-start p-12 md:p-24 bg-gradient-to-br from-gray-50 via-stone-50 to-slate-100 text-gray-800 font-sans transition-all duration-300`}>
@@ -427,7 +488,7 @@ export default function Home() {
           <div className="flex justify-end">
             <button
               type="submit"
-              disabled={isLoading || isAccepting || isRefining} // Disable generate during refine too
+              disabled={isLoading || isAccepting || isRefining}
               className={`inline-flex justify-center py-2 px-6 border border-transparent shadow-sm text-sm font-medium rounded-md text-white transition duration-150 ease-in-out ${(isLoading || isAccepting || isRefining) ? 'bg-gray-400 cursor-not-allowed' : 'bg-gradient-to-r from-slate-600 to-gray-800 hover:from-slate-700 hover:to-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500'}`}
             >
               {isLoading ? (
@@ -456,12 +517,11 @@ export default function Home() {
               onChange={setGeneratedStory}
               placeholder="Your story will appear here..."
               className="bg-white/80 rounded-md"
-              diffToDisplay={diffForEditor} // Pass diff state to EditableText
-              diffStartIndex={diffStartIndex} // Pass start index
-              diffEndIndex={diffEndIndex}     // Pass end index
+              diffToDisplay={diffForEditor}
+              diffStartIndex={diffStartIndex}
+              diffEndIndex={diffEndIndex}
             />
             
-            {/* Refinement Input Area */} 
             {currentGenerationId && acceptStatus?.type !== 'success' && (
                 <div>
                    <label htmlFor="refinementFeedback" className="block text-sm font-medium text-gray-700 mb-1">Refinement Instructions:</label>
@@ -478,9 +538,7 @@ export default function Home() {
                 </div>
             )}
 
-            {/* Iteration Controls */} 
             <div className="pt-4 border-t border-slate-200 flex flex-col sm:flex-row justify-end items-center space-y-2 sm:space-y-0 sm:space-x-3">
-                {/* Accept Status Display */} 
                 {acceptStatus && (
                     <span className={`text-sm font-medium ${acceptStatus.type === 'success' ? 'text-green-600' : 'text-red-600'} order-first sm:order-none`}>
                         {acceptStatus.message}
@@ -502,7 +560,7 @@ export default function Home() {
                 
                 <button 
                   onClick={handleRefine}
-                  disabled={!currentGenerationId || !refinementFeedback.trim() || isRefining || isAccepting || acceptStatus?.type === 'success' || !userIdentifier} 
+                  disabled={!currentGenerationId || !refinementFeedback.trim() || isRefining || isAccepting || acceptStatus?.type === 'success' || !effectiveIdentifier} 
                   className={`py-1 px-4 border rounded text-sm font-medium transition duration-150 ease-in-out 
                               ${isRefining ? 'bg-gray-200 text-gray-500 cursor-wait' : 
                                'border-blue-600 text-blue-700 hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed'}
@@ -520,16 +578,27 @@ export default function Home() {
 
       {/* History Section */} 
       <div className={`w-full max-w-3xl bg-white/60 backdrop-blur-md rounded-xl shadow-lg p-8 border border-gray-200/40 transition-all duration-300 ${!isChatCollapsed ? 'mr-[22rem]' : 'mr-0'}`}>
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-2xl font-semibold text-slate-700">Generation History</h2>
-          <button 
-            onClick={fetchHistory} 
-            disabled={isLoadingHistory || !userIdentifier} // <-- Disable if no identifier
-            className="py-1 px-3 border border-slate-400 text-slate-600 rounded text-sm hover:bg-slate-100 transition disabled:opacity-50"
-          >
-            {isLoadingHistory ? 'Loading...' : 'Refresh'}
-          </button>
+        <div className="flex flex-wrap justify-between items-center gap-y-2 mb-4">
+          <h2 className="text-2xl font-semibold text-slate-700">
+            {user ? 'Your Generation History' : 'Recent Anonymous Generations (This Browser)'}
+          </h2>
+          <div className="flex items-center space-x-3">
+            <button 
+              onClick={fetchHistory} 
+              disabled={isLoadingHistory || authLoading || !effectiveIdentifier} 
+              className="py-1 px-3 border border-slate-400 text-slate-600 rounded text-sm hover:bg-slate-100 transition disabled:opacity-50"
+            >
+              {isLoadingHistory ? 'Loading...' : 'Refresh'}
+            </button>
+            <AuthButton onSignInClick={openAuthModal} />
+          </div>
         </div>
+        
+        {!user && (
+           <p className="text-xs text-slate-500 mb-4 -mt-2">
+             Sign up so your snippets don't vanish.
+           </p>
+        )} 
 
         {historyError && (
             <div className="mb-4 p-3 bg-red-50 border border-red-300 text-red-600 rounded-lg text-sm">
@@ -537,16 +606,22 @@ export default function Home() {
             </div>
         )}
 
-        {isLoadingHistory && !historyError && !userIdentifier && (
-            <p className="text-slate-500 text-center py-4">Loading user identifier...</p> // <-- Indicate loading ID state
+        {(authLoading || (isLoadingHistory && !historyError)) && (
+            <p className="text-slate-500 text-center py-4">Loading history...</p>
         )}
 
-        {isLoadingHistory && !historyError && pastGenerations.length === 0 && userIdentifier && (
-            <p className="text-slate-500 text-center py-4">No past generations found for this browser.</p> // <-- Updated message
+        {!authLoading && !isLoadingHistory && !historyError && pastGenerations.length === 0 && user && (
+            <p className="text-slate-500 text-center py-4">No past generations found for your account.</p>
+        )}
+        {!authLoading && !isLoadingHistory && !historyError && pastGenerations.length === 0 && !user && anonUserIdentifier && (
+            <p className="text-slate-500 text-center py-4">No past generations found for this browser session.</p>
+        )}
+        {!authLoading && !isLoadingHistory && !historyError && pastGenerations.length === 0 && !user && !anonUserIdentifier && (
+            <p className="text-slate-500 text-center py-4">Initializing anonymous session...</p>
         )}
 
-        {!isLoadingHistory && !historyError && pastGenerations.length > 0 && (
-            <div className="space-y-4 max-h-96 overflow-y-auto pr-2"> {/* Added scroll */} 
+        {!authLoading && !isLoadingHistory && !historyError && pastGenerations.length > 0 && (
+            <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
                 {pastGenerations.map((gen) => (
                     <div key={gen.id} className={`p-4 rounded-lg border ${gen.is_accepted ? 'bg-green-50/70 border-green-200' : 'bg-white/80 border-gray-200/80'}`}> 
                         <p className="text-xs text-gray-500 mb-1">
@@ -623,6 +698,9 @@ export default function Home() {
         onReceiveProposal={handleReceiveProposal}
         onNewChat={handleNewChat}
       />
+
+      {/* Render the AuthModal conditionally */}
+      <AuthModal isOpen={isAuthModalOpen} onClose={closeAuthModal} />
     </main>
   );
 }

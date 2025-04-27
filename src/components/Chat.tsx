@@ -96,6 +96,9 @@ export default function Chat({
     const handleKeyDown = (event: KeyboardEvent) => {
       // Check for Cmd+Ctrl+A (Mac) or Ctrl+Alt+A (Windows/Linux)
       const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      
+      if (!event.key) return; // Ignore events without a key property
+      
       const shortcutPressed = event.key.toLowerCase() === 'a' && event.ctrlKey && (
         (isMac && event.metaKey) || // Mac: Cmd+Ctrl+A
         (!isMac && event.altKey)   // Windows/Linux: Ctrl+Alt+A
