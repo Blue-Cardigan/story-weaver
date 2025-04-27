@@ -1,5 +1,5 @@
 import { createBrowserClient } from '@supabase/ssr'
-import type { StoryGeneration } from '@/types/supabase'; // Import from new types file
+import type { Database } from '@/types/supabase'; // Import Database type
 
 // Ensure environment variables are set
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -23,7 +23,7 @@ export function createSupabaseBrowserClient() {
     throw new Error("Missing Supabase environment variables for browser client.");
   }
 
-  return createBrowserClient<StoryGeneration>(
+  return createBrowserClient<Database>(
     supabaseUrl,
     supabaseAnonKey
   );

@@ -1,19 +1,110 @@
 'use client'
 
 import { createSupabaseBrowserClient } from '@/lib/supabaseBrowserClient';
+import { Database } from '@/types/supabase';
 import { User } from '@supabase/supabase-js';
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { v4 as uuidv4 } from 'uuid'; // For anon ID
+import CreateStoryModal from './CreateStoryModal'; // Import the modal
+
+const ANON_USER_ID_KEY = 'storyWeaverAnonUserId'; // Reuse the key from page.tsx
+
+type Story = Database['public']['Tables']['stories']['Row'];
+type StoryStructure = Database['public']['Enums']['story_structure_type'];
 
 interface DashboardOverlayProps {
   isOpen: boolean;
   onClose: () => void;
   user: User | null;
+  setActiveStoryId: (storyId: string | null) => void; // Prop to set active story in parent
 }
 
-export default function DashboardOverlay({ isOpen, onClose, user }: DashboardOverlayProps) {
+export default function DashboardOverlay({ 
+    isOpen, 
+    onClose, 
+    user,
+    setActiveStoryId // Destructure the new prop
+}: DashboardOverlayProps) {
   const supabase = createSupabaseBrowserClient();
   const [loadingLogout, setLoadingLogout] = useState(false);
   const [logoutError, setLogoutError] = useState<string | null>(null);
+  const [stories, setStories] = useState<Story[]>([]);
+  const [loadingStories, setLoadingStories] = useState(false);
+  const [storyError, setStoryError] = useState<string | null>(null);
+  const [anonUserIdentifier, setAnonUserIdentifier] = useState<string | null>(null);
+
+  // State for Create Story Modal
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [isCreatingStory, setIsCreatingStory] = useState(false);
+  const [createStoryError, setCreateStoryError] = useState<string | null>(null);
+
+  // Get anonymous identifier on mount
+  useEffect(() => {
+    let anonId = localStorage.getItem(ANON_USER_ID_KEY);
+    if (!anonId) {
+      // In theory, page.tsx should create this, but handle case if dashboard is opened first
+      anonId = uuidv4();
+      localStorage.setItem(ANON_USER_ID_KEY, anonId);
+    }
+    setAnonUserIdentifier(anonId);
+  }, []);
+
+  const effectiveIdentifier = user?.id ?? anonUserIdentifier;
+
+  // Function to fetch stories
+  const fetchStories = useCallback(async () => {
+    if (!effectiveIdentifier) {
+      console.log("Dashboard: Identifier not ready, skipping story fetch.");
+      setLoadingStories(false); // Ensure loading stops if no identifier
+      setStories([]); // Clear stories if no identifier
+      return;
+    }
+    setLoadingStories(true);
+    setStoryError(null);
+
+    const headers: HeadersInit = {};
+    const url = '/api/stories';
+
+    if (!user && anonUserIdentifier) {
+      headers['X-User-Identifier'] = anonUserIdentifier;
+      // No need for query param as RLS uses header
+    }
+    // For logged-in users, the server-side Supabase client uses the session cookie.
+
+    try {
+      const response = await fetch(url, { 
+        headers: headers,
+        cache: 'no-store' // Ensure fresh data is fetched
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to fetch stories');
+      }
+      setStories(data as Story[]);
+    } catch (err) {
+      console.error("Dashboard: Failed to fetch stories:", err);
+      setStoryError(err instanceof Error ? err.message : 'Could not load stories.');
+      setStories([]); // Clear stories on error
+    } finally {
+      setLoadingStories(false);
+    }
+  }, [effectiveIdentifier, user, anonUserIdentifier]);
+
+  // Fetch stories when the dashboard opens or the effective identifier changes
+  useEffect(() => {
+    if (isOpen) {
+      // Fetch immediately if identifier is ready, otherwise fetch will run when identifier updates
+      if (effectiveIdentifier) {
+        fetchStories();
+      }
+    } else {
+      // Optionally clear stories when closed to ensure fresh load next time
+      // setStories([]); 
+      // Close create modal if dashboard is closed
+      setIsCreateModalOpen(false);
+      setCreateStoryError(null);
+    }
+  }, [isOpen, effectiveIdentifier, fetchStories]);
 
   const handleLogout = async () => {
     setLoadingLogout(true);
@@ -22,14 +113,81 @@ export default function DashboardOverlay({ isOpen, onClose, user }: DashboardOve
     if (error) {
       console.error('Error logging out:', error.message);
       setLogoutError(error.message);
-      setLoadingLogout(false);
     } else {
+      setStories([]); // Clear stories on logout
+      setStoryError(null);
+      setLoadingStories(false);
+      setIsCreateModalOpen(false); // Ensure modal is closed on logout
+      setCreateStoryError(null);
       onClose(); // Close overlay on successful logout
-      // Auth listener in page.tsx will handle user state change
+    }
+    setLoadingLogout(false);
+  };
+
+  const handleOpenCreateModal = () => {
+    setCreateStoryError(null); // Clear previous errors
+    setIsCreateModalOpen(true);
+  };
+
+  const handleCloseCreateModal = () => {
+    setIsCreateModalOpen(false);
+    setCreateStoryError(null);
+  };
+
+  const handleCreateStorySubmit = async (formData: { 
+      title: string; 
+      structure_type: StoryStructure; 
+      global_synopsis?: string; 
+      global_style_note?: string 
+  }) => {
+    if (!effectiveIdentifier) {
+        setCreateStoryError("Cannot create story: User identifier is missing.");
+        return;
+    }
+    setIsCreatingStory(true);
+    setCreateStoryError(null);
+
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    const url = '/api/stories';
+    if (!user && anonUserIdentifier) {
+        headers['X-User-Identifier'] = anonUserIdentifier;
+    }
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(formData),
+        });
+
+        const result = await response.json();
+
+        if (!response.ok) {
+            throw new Error(result.error || `API request failed with status ${response.status}`);
+        }
+
+        // Success
+        handleCloseCreateModal(); // Close modal on success
+        fetchStories(); // Refresh the story list
+
+    } catch (err) {
+        console.error('Dashboard: Failed to create story:', err);
+        setCreateStoryError(err instanceof Error ? err.message : 'An unknown error occurred.');
+    } finally {
+        setIsCreatingStory(false);
     }
   };
 
-  if (!isOpen || !user) return null;
+  const handleLoadStory = (story: Story) => {
+    setActiveStoryId(story.id); // Set the active story ID in the parent (page.tsx)
+    // TODO: Potentially load global synopsis/style into page.tsx state?
+    // For now, just setting the ID and closing dashboard.
+    onClose(); // Close dashboard after loading
+  }
+
+  if (!isOpen) return null;
 
   const buttonClasses = "py-2 px-4 rounded-md text-sm font-medium transition duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 disabled:opacity-60 disabled:cursor-not-allowed";
   const loadingSpinner = (
@@ -40,55 +198,129 @@ export default function DashboardOverlay({ isOpen, onClose, user }: DashboardOve
   );
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-gradient-to-br from-gray-900/80 via-slate-800/80 to-gray-900/80 backdrop-blur-md animate-fade-in">
-      <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-lg m-4 relative border border-slate-300/50">
-        {/* Close Button */} 
-        <button 
-            onClick={onClose} 
-            className="absolute top-3 right-3 text-gray-400 hover:text-gray-700 transition-colors" 
-            aria-label="Close dashboard"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-
-        <h2 className="text-2xl font-semibold text-center mb-6 text-slate-700">Manage Your Story</h2>
-        
-        <div className="mb-6 p-4 bg-slate-50 rounded border border-slate-200">
-            <p className="text-sm text-slate-600">Logged in as:</p>
-            <p className="text-md font-medium text-slate-800 truncate">{user.email}</p>
+    <>
+      <div className="fixed inset-0 z-40 flex flex-col bg-gradient-to-br from-gray-50 via-stone-50 to-slate-100 text-gray-800 animate-fade-in p-6 sm:p-8 md:p-12">
+        {/* Header Area */}
+        <div className="flex justify-between items-center mb-6 sm:mb-8">
+          <div className="flex items-center space-x-3">
+            <h1 className="text-xl sm:text-2xl font-semibold text-slate-700">Story Dashboard</h1>
+            {user && (
+              <div className="text-xs sm:text-sm bg-slate-200/70 text-slate-600 px-2 py-0.5 rounded">
+                  Logged in as: <span className="font-medium">{user.email}</span>
+              </div>
+            )}
+            {!user && anonUserIdentifier && (
+              <div className="text-xs sm:text-sm bg-slate-200/70 text-slate-600 px-2 py-0.5 rounded">
+                  Anonymous Session
+              </div>
+            )}
+          </div>
+          <button
+              onClick={onClose}
+              className="text-gray-500 hover:text-gray-800 transition-colors p-1 rounded-full hover:bg-slate-200/50"
+              aria-label="Close dashboard"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
 
-        {/* Placeholder for future dashboard content */} 
-        <div className="text-center text-slate-500 text-sm mb-8">
-            (More dashboard features coming soon...)
+        {/* Main Content Area */}
+        <div className="flex-grow overflow-y-auto bg-white/70 backdrop-blur-sm rounded-lg shadow-lg p-6 border border-gray-200/50 space-y-6">
+          
+          {/* Section: My Stories */}
+          <section>
+              <h2 className="text-lg font-semibold text-slate-600 mb-4 border-b pb-2">My Stories</h2>
+              {loadingStories && <p className="text-slate-500 text-center py-4">Loading stories...</p>}
+              {storyError && <p className="text-red-500 text-sm text-center py-4">Error loading stories: {storyError}</p>}
+              {!loadingStories && !storyError && stories.length === 0 && (
+                  <p className="text-slate-500 text-sm italic text-center py-4">You haven't created any stories yet.</p>
+              )}
+              {!loadingStories && !storyError && stories.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {stories.map(story => (
+                          <div key={story.id} className="bg-white/80 p-4 rounded-lg border border-slate-200/80 shadow-sm hover:shadow-md transition-shadow duration-150 flex flex-col">
+                              <div className="flex-grow">
+                                  <h3 className="text-md font-semibold text-slate-700 truncate mb-1" title={story.title}>{story.title}</h3>
+                                  <p className="text-xs text-slate-500 mb-2">
+                                      Type: <span className="capitalize font-medium">{story.structure_type?.replace('_', ' ') || 'N/A'}</span>
+                                  </p>
+                                  <p className="text-xs text-slate-500 mb-3">
+                                      Last updated: {new Date(story.updated_at).toLocaleDateString()}
+                                  </p>
+                              </div>
+                              <div className="flex justify-end space-x-2 mt-auto pt-2">
+                                  {/* TODO: Implement Edit functionality */}
+                                  <button className="text-xs py-1 px-2 rounded border border-slate-300 hover:bg-slate-100 text-slate-600 transition disabled:opacity-50" disabled>Edit</button>
+                                  <button 
+                                    onClick={() => handleLoadStory(story)} // Call handler on click
+                                    className="text-xs py-1 px-2 rounded border border-blue-500 hover:bg-blue-50 text-blue-600 transition"
+                                  >
+                                      Load
+                                  </button>
+                              </div>
+                          </div>
+                      ))}
+                  </div>
+              )}
+          </section>
+
+          {/* Section: Create New Story */}
+          <section>
+              <h2 className="text-lg font-semibold text-slate-600 mb-4 border-b pb-2">Create New Story</h2>
+              <button 
+                onClick={handleOpenCreateModal}
+                className={`${buttonClasses} bg-blue-600 hover:bg-blue-700 text-white`}
+                disabled={!effectiveIdentifier} // Disable if no user/anonId yet
+                title={!effectiveIdentifier ? "Initializing user session..." : "Start a new story"}
+              >
+                  + Start a New Story
+              </button>
+          </section>
+
+          {/* Section: Global Settings (Placeholder) */}
+          <section>
+              <h2 className="text-lg font-semibold text-slate-600 mb-4 border-b pb-2">Global Settings</h2>
+              <p className="text-slate-500 text-sm italic">(Coming soon: View/Edit global synopsis, style notes, etc.)</p>
+          </section>
+
         </div>
 
-        {logoutError && (
-          <p className="text-red-500 text-sm text-center mb-4">Error logging out: {logoutError}</p>
-        )}
-
-        <div className="flex justify-center">
+        {/* Footer Area (Logout) */}
+        <div className="mt-6 flex justify-end items-center space-x-4">
+          {logoutError && (
+            <p className="text-red-500 text-sm">Error: {logoutError}</p>
+          )}
           <button
             onClick={handleLogout}
-            disabled={loadingLogout}
-            className={`${buttonClasses} ${loadingLogout ? 'bg-red-400' : 'bg-red-600 hover:bg-red-700'} text-white w-full sm:w-auto`}
+            disabled={loadingLogout || (!user && !anonUserIdentifier)} // Disable if no user/anonId
+            className={`${buttonClasses} ${loadingLogout ? 'bg-red-400' : 'bg-red-600 hover:bg-red-700'} text-white`}
           >
             {loadingLogout ? loadingSpinner : null} Logout
           </button>
         </div>
+
+        {/* Add fade-in animation */}
+        <style jsx>{`
+          @keyframes fade-in {
+            from { opacity: 0; }
+            to { opacity: 1; }
+          }
+          .animate-fade-in {
+            animation: fade-in 0.2s ease-out forwards;
+          }
+        `}</style>
       </div>
-      {/* Add fade-in animation */}
-      <style jsx>{`
-        @keyframes fade-in {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-        .animate-fade-in {
-          animation: fade-in 0.2s ease-out forwards;
-        }
-      `}</style>
-    </div>
+
+      {/* Render the Create Story Modal */}
+      <CreateStoryModal 
+        isOpen={isCreateModalOpen}
+        onClose={handleCloseCreateModal}
+        onSubmit={handleCreateStorySubmit}
+        isCreating={isCreatingStory}
+        createError={createStoryError}
+      />
+    </>
   );
 } 

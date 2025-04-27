@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createSupabaseBrowserClient } from '@/lib/supabaseBrowserClient';
-import type { StoryGeneration } from '@/types/supabase';
+import type { Database } from '@/types/supabase';
 import { User } from '@supabase/supabase-js';
 import EditableText from '@/components/EditableText';
 import Chat from '@/components/Chat';
@@ -11,6 +11,10 @@ import AuthModal from '@/components/AuthModal';
 import DashboardOverlay from '@/components/DashboardOverlay';
 import * as Diff from 'diff';
 import { v4 as uuidv4 } from 'uuid';
+
+// Define Story type based on DB schema
+type Story = Database['public']['Tables']['stories']['Row'];
+type StoryGeneration = Database['public']['Tables']['story_generations']['Row'];
 
 interface EditProposal {
   type: 'replace' | 'insert' | 'delete' | 'clarification' | 'none';
@@ -28,8 +32,16 @@ export default function Home() {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isDashboardOpen, setIsDashboardOpen] = useState(false);
   const [anonUserIdentifier, setAnonUserIdentifier] = useState<string | null>(null);
+  const [activeStoryId, setActiveStoryId] = useState<string | null>(null);
+  const [activeStoryDetails, setActiveStoryDetails] = useState<Story | null>(null);
+  const [isLoadingStoryDetails, setIsLoadingStoryDetails] = useState(false);
+  const [storyDetailsError, setStoryDetailsError] = useState<string | null>(null);
+  const [currentStoryParts, setCurrentStoryParts] = useState<StoryGeneration[]>([]);
+  const [isLoadingStoryParts, setIsLoadingStoryParts] = useState(false);
+  const [storyPartsError, setStoryPartsError] = useState<string | null>(null);
   const [synopsis, setSynopsis] = useState('');
   const [styleNote, setStyleNote] = useState('');
+  const [partInstructions, setPartInstructions] = useState('');
   const [length, setLength] = useState<number | ''>(500);
   const [useWebSearch, setUseWebSearch] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -40,14 +52,12 @@ export default function Home() {
   const [refinementFeedback, setRefinementFeedback] = useState('');
   const [isRefining, setIsRefining] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pastGenerations, setPastGenerations] = useState<StoryGeneration[]>([]);
-  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
-  const [historyError, setHistoryError] = useState<string | null>(null);
   const [isProcessingChange, setIsProcessingChange] = useState(false);
   const [isChatCollapsed, setIsChatCollapsed] = useState(false);
   const [diffForEditor, setDiffForEditor] = useState<Diff.Change[] | null>(null);
   const [diffStartIndex, setDiffStartIndex] = useState<number | null>(null);
   const [diffEndIndex, setDiffEndIndex] = useState<number | null>(null);
+  const [storyPartsSavingStates, setStoryPartsSavingStates] = useState<Record<string, { isLoading: boolean; error: string | null; success: boolean }>>({});
 
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
 
@@ -87,6 +97,14 @@ export default function Home() {
            }
            if (event === 'SIGNED_OUT') {
                setIsDashboardOpen(false);
+               setActiveStoryId(null);
+               setActiveStoryDetails(null);
+               setCurrentStoryParts([]);
+               setGeneratedStory(null);
+               setCurrentGenerationId(null);
+               setSynopsis('');
+               setStyleNote('');
+               setPartInstructions('');
            }
        }
     });
@@ -99,54 +117,91 @@ export default function Home() {
 
   const effectiveIdentifier = user?.id ?? anonUserIdentifier;
 
-  const fetchHistory = async () => {
-    if (authLoading || !effectiveIdentifier) {
-        console.log("Auth state/identifier not ready, skipping history fetch.");
-        return;
-    }
+  const fetchStoryDetails = useCallback(async (storyId: string) => {
+    if (!effectiveIdentifier) return;
 
-    setIsLoadingHistory(true);
-    setHistoryError(null);
-    
+    setIsLoadingStoryDetails(true);
+    setStoryDetailsError(null);
+    setActiveStoryDetails(null);
+
     const headers: HeadersInit = {};
-    let url = '/api/history';
+    const url = `/api/stories/${storyId}`;
 
-    if (user) {
-      // Logged-in user: API will use session cookie
-      // No extra params/headers needed as RLS uses auth.uid()
-    } else if (anonUserIdentifier) {
-      // Anonymous user: Pass identifier via query param (and maybe header for RLS)
-      url += `?user_identifier=${encodeURIComponent(anonUserIdentifier)}`;
-      // Header used by RLS policy for anonymous select
-      headers['X-User-Identifier'] = anonUserIdentifier; 
-    } else {
-      // Should not happen if logic above is correct
-      console.warn("Attempted to fetch history without user or anonymous identifier.");
-      setIsLoadingHistory(false);
-      return;
+    if (!user && anonUserIdentifier) {
+      headers['X-User-Identifier'] = anonUserIdentifier;
     }
 
     try {
       const response = await fetch(url, { headers });
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch history data');
+        throw new Error(data.error || 'Failed to fetch story details');
       }
-      setPastGenerations(data as StoryGeneration[]);
-    } catch (err) { 
-      console.error("Failed to fetch history:", err);
-      setHistoryError(err instanceof Error ? err.message : 'Could not load past generations.');
+      setActiveStoryDetails(data as Story);
+      setPartInstructions('');
+      setSynopsis('');
+      setStyleNote('');
+    } catch (err) {
+      console.error("Failed to fetch story details:", err);
+      setStoryDetailsError(err instanceof Error ? err.message : 'Could not load story details.');
     } finally {
-      setIsLoadingHistory(false);
+      setIsLoadingStoryDetails(false);
     }
-  };
+  }, [effectiveIdentifier, user, anonUserIdentifier]);
+
+  const fetchStoryParts = useCallback(async (storyId: string) => {
+    if (!effectiveIdentifier) return;
+
+    setIsLoadingStoryParts(true);
+    setStoryPartsError(null);
+    setCurrentStoryParts([]);
+
+    const headers: HeadersInit = {};
+    const url = `/api/history?storyId=${encodeURIComponent(storyId)}`;
+
+    if (!user && anonUserIdentifier) {
+        headers['X-User-Identifier'] = anonUserIdentifier;
+    }
+
+    try {
+      const response = await fetch(url, { headers });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to fetch story parts');
+      }
+      setCurrentStoryParts(data as StoryGeneration[]);
+    } catch (err) {
+      console.error("Failed to fetch story parts:", err);
+      setStoryPartsError(err instanceof Error ? err.message : 'Could not load story parts.');
+    } finally {
+      setIsLoadingStoryParts(false);
+    }
+  }, [effectiveIdentifier, user, anonUserIdentifier]);
 
   useEffect(() => {
-     if (!authLoading && effectiveIdentifier) { 
-       fetchHistory();
-     }
-     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, effectiveIdentifier]);
+    if (activeStoryId && effectiveIdentifier) {
+      fetchStoryDetails(activeStoryId);
+      fetchStoryParts(activeStoryId);
+      setGeneratedStory(null);
+      setCurrentGenerationId(null);
+      setError(null);
+      setAcceptStatus(null);
+      setRefinementFeedback('');
+      setDiffForEditor(null);
+      setDiffStartIndex(null);
+      setDiffEndIndex(null);
+    } else {
+      setActiveStoryDetails(null);
+      setCurrentStoryParts([]);
+      setStoryDetailsError(null);
+      setStoryPartsError(null);
+      setSynopsis('');
+      setStyleNote('');
+      setPartInstructions('');
+      setLength(500);
+      setUseWebSearch(false);
+    }
+  }, [activeStoryId, effectiveIdentifier]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -167,24 +222,43 @@ export default function Home() {
     setAcceptStatus(null);
     setRefinementFeedback('');
 
-    // Basic validation
-    if (!synopsis.trim() || !styleNote.trim() || length === '') {
-        setError('Please fill in all fields: Synopsis, Style Note, and Desired Length.');
+    if (activeStoryId && !activeStoryDetails) {
+        setError('Story details are still loading. Please wait.');
         setIsLoading(false);
         return;
     }
-    if (length <= 0) {
+    if (!activeStoryId && (!synopsis.trim() || !styleNote.trim())) {
+        setError('Please fill in Synopsis and Style Note.');
+        setIsLoading(false);
+        return;
+    }
+    if (activeStoryId && !partInstructions.trim() && currentStoryParts.length === 0) {
+        setError('Please provide instructions for the next part.');
+        setIsLoading(false);
+        return;
+    }
+    if (length === '' || length <= 0) {
         setError('Desired length must be a positive number.');
         setIsLoading(false);
         return;
     }
 
     const payload: any = {
-      synopsis,
-      styleNote,
       length,
       useWebSearch,
     };
+
+    if (activeStoryId && activeStoryDetails) {
+        payload.storyId = activeStoryId;
+        payload.partInstructions = partInstructions;
+        payload.globalSynopsis = activeStoryDetails.global_synopsis;
+        payload.globalStyleNote = activeStoryDetails.global_style_note;
+        const lastPart = currentStoryParts.length > 0 ? currentStoryParts[currentStoryParts.length - 1] : null;
+        payload.previousPartContent = lastPart?.generated_story ?? null;
+    } else {
+        payload.synopsis = synopsis;
+        payload.styleNote = styleNote;
+    }
 
     if (!user && anonUserIdentifier) {
       payload.userIdentifier = anonUserIdentifier;
@@ -202,21 +276,13 @@ export default function Home() {
       const result = await response.json();
 
       if (!response.ok) {
-        // Throw error with message from API response or default message
         throw new Error(result.error || `API request failed with status ${response.status}`);
       }
 
-      // Assuming the API returns { story: "...", generationId: "..." } on success
       if (result.story && result.generationId) {
         setGeneratedStory(result.story);
         setCurrentGenerationId(result.generationId);
-        // if (result.groundingMetadata) {
-        //   setGroundingMetadata(result.groundingMetadata);
-        //   // TODO: Render grounding metadata/links if needed
-        //   console.log("Grounding Metadata:", result.groundingMetadata);
-        // }
       } else {
-        // Handle unexpected success response format
         throw new Error('Invalid response format from API.');
       }
 
@@ -229,20 +295,34 @@ export default function Home() {
   };
 
   const handleAccept = async () => {
-    if (!currentGenerationId) return;
+    if (!currentGenerationId || !effectiveIdentifier || !generatedStory) return;
     setIsAccepting(true);
     setAcceptStatus(null);
     try {
       const response = await fetch('/api/accept', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ generationId: currentGenerationId }),
+        body: JSON.stringify({
+            generationId: currentGenerationId,
+            editedContent: generatedStory
+        }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Failed to accept generation');
       console.log("Accepted:", result.message);
-      setAcceptStatus({ type: 'success', message: result.message || 'Generation marked as accepted!' });
-      // Optionally clear the form or show a success message
+      setAcceptStatus({ type: 'success', message: result.message || 'Part accepted!' });
+
+      if (activeStoryId) {
+          await fetchStoryParts(activeStoryId);
+          setGeneratedStory(null);
+          setCurrentGenerationId(null);
+          setPartInstructions('');
+      } else {
+          setGeneratedStory(null);
+          setCurrentGenerationId(null);
+          setSynopsis('');
+          setStyleNote('');
+      }
     } catch (err) {
       console.error("Accept failed:", err);
       const message = err instanceof Error ? err.message : 'An unknown error occurred while accepting.';
@@ -253,7 +333,7 @@ export default function Home() {
   };
 
   const handleRefine = async () => {
-    if (!currentGenerationId || !refinementFeedback.trim() || isRefining || isAccepting || acceptStatus?.type === 'success' || !effectiveIdentifier) {
+    if (!currentGenerationId || !refinementFeedback.trim() || isRefining || isAccepting || acceptStatus?.type === 'success' || !effectiveIdentifier || !generatedStory) {
         return;
     }
 
@@ -261,14 +341,41 @@ export default function Home() {
     setError(null);
     setAcceptStatus(null);
 
+    try {
+         console.log(`Saving potential edits for ${currentGenerationId} before refining...`);
+         const saveResponse = await fetch(`/api/generations/${currentGenerationId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ generated_story: generatedStory }),
+         });
+         if (!saveResponse.ok) {
+            const saveResult = await saveResponse.json();
+            throw new Error(saveResult.error || `Failed to save edits before refinement (status ${saveResponse.status})`);
+         }
+         console.log(`Edits for ${currentGenerationId} saved successfully.`);
+    } catch (err) {
+        console.error("Error saving edits before refinement:", err);
+        setError(err instanceof Error ? `Error saving edits: ${err.message}` : 'An unknown error occurred while saving edits before refinement.');
+        setIsRefining(false);
+        return;
+    }
+
     const payload: any = {
-        styleNote: styleNote, 
-        length: length, 
-        useWebSearch: useWebSearch, 
-        parentId: currentGenerationId, 
+        length: length,
+        useWebSearch: useWebSearch,
+        parentId: currentGenerationId,
         refinementFeedback: refinementFeedback,
     };
 
+    if (activeStoryId && activeStoryDetails) {
+        payload.storyId = activeStoryId;
+        payload.partInstructions = partInstructions;
+        payload.globalSynopsis = activeStoryDetails.global_synopsis;
+        payload.globalStyleNote = activeStoryDetails.global_style_note;
+    } else {
+        payload.synopsis = synopsis;
+        payload.styleNote = styleNote;
+    }
     if (!user && anonUserIdentifier) {
       payload.userIdentifier = anonUserIdentifier;
     }
@@ -281,10 +388,7 @@ export default function Home() {
       });
 
       const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.error || `API request failed during refinement`);
-      }
+      if (!response.ok) throw new Error(result.error || `API request failed during refinement`);
 
       if (result.story && result.generationId) {
         setGeneratedStory(result.story);
@@ -309,12 +413,8 @@ export default function Home() {
     setError(null);
     
     try {
-      // In a real app, this would be an API call to process the change request
-      // For now, we'll simulate a delay and then update the story
       await new Promise(resolve => setTimeout(resolve, 1000));
       
-      // Simple implementation: just append the request to the story
-      // In a real app, this would be more sophisticated
       const updatedStory = `${generatedStory}\n\n[Change Request: ${request}]\n[Selected Text: ${selections.join(', ')}]`;
       setGeneratedStory(updatedStory);
       
@@ -332,7 +432,6 @@ export default function Home() {
 
         const { type, startIndex, endIndex, text } = proposal;
 
-        // Ensure indices are valid numbers if provided
         const start = typeof startIndex === 'number' ? startIndex : -1;
         const end = typeof endIndex === 'number' ? endIndex : -1;
         const newText = typeof text === 'string' ? text : '';
@@ -369,7 +468,6 @@ export default function Home() {
         }
 
     });
-     // Clear the diff display after accepting
     setDiffForEditor(null);
     setDiffStartIndex(null);
     setDiffEndIndex(null);
@@ -386,26 +484,22 @@ export default function Home() {
       setDiffStartIndex(proposal.startIndex);
       setDiffEndIndex(proposal.endIndex);
     } else {
-      // Clear diff for other proposal types (insert, delete, none, clarification)
       setDiffForEditor(null);
       setDiffStartIndex(null);
       setDiffEndIndex(null);
     }
   };
 
-  const handleRejectProposal = (/* messageId: string */) => {
-    // Parent primarily needs to clear the diff display
+  const handleRejectProposal = () => {
     setDiffForEditor(null);
     setDiffStartIndex(null);
     setDiffEndIndex(null);
   };
 
   const handleNewChat = () => {
-    // Clear any displayed diff when starting a new chat session
     setDiffForEditor(null);
     setDiffStartIndex(null);
     setDiffEndIndex(null);
-    // Note: The Chat component itself should handle clearing its internal message state
   };
 
   const openAuthModal = () => setIsAuthModalOpen(true);
@@ -414,11 +508,67 @@ export default function Home() {
   const openDashboard = () => setIsDashboardOpen(true);
   const closeDashboard = () => setIsDashboardOpen(false);
 
+  const handleUnloadStory = () => {
+      setActiveStoryId(null);
+      setGeneratedStory(null);
+      setCurrentGenerationId(null);
+      setError(null);
+      setAcceptStatus(null);
+      setRefinementFeedback('');
+  };
+
+  const handleStoryPartChange = (partId: string, newContent: string) => {
+    setCurrentStoryParts(prevParts =>
+      prevParts.map(part =>
+        part.id === partId ? { ...part, generated_story: newContent } : part
+      )
+    );
+    setStoryPartsSavingStates(prev => ({
+      ...prev,
+      [partId]: { isLoading: false, error: null, success: false }
+    }));
+  };
+
+  const handleSaveChangesForPart = async (partId: string) => {
+    const partToSave = currentStoryParts.find(part => part.id === partId);
+    if (!partToSave || !partToSave.generated_story) {
+        console.error("Cannot save part: Not found or content is empty.");
+        setStoryPartsSavingStates(prev => ({ ...prev, [partId]: { isLoading: false, error: "Part data missing.", success: false } }));
+        return;
+    }
+
+    setStoryPartsSavingStates(prev => ({ ...prev, [partId]: { isLoading: true, error: null, success: false } }));
+
+    try {
+        const response = await fetch(`/api/generations/${partId}`, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ generated_story: partToSave.generated_story }),
+        });
+
+        const result = await response.json();
+
+        if (!response.ok) {
+            throw new Error(result.error || `Failed to save changes (status ${response.status})`);
+        }
+
+        setStoryPartsSavingStates(prev => ({ ...prev, [partId]: { isLoading: false, error: null, success: true } }));
+        setTimeout(() => {
+            setStoryPartsSavingStates(prev => ({ ...prev, [partId]: { isLoading: false, error: null, success: false } }));
+        }, 3000);
+
+    } catch (err) {
+        console.error(`Failed to save part ${partId}:`, err);
+        const message = err instanceof Error ? err.message : "An unknown error occurred.";
+        setStoryPartsSavingStates(prev => ({ ...prev, [partId]: { isLoading: false, error: message, success: false } }));
+    }
+  };
+
   return (
     <main className={`flex min-h-screen flex-col justify-start p-12 md:p-24 bg-gradient-to-br from-gray-50 via-stone-50 to-slate-100 text-gray-800 font-sans transition-all duration-300`}>
-       {/* Header area adjusted for dashboard trigger */}
        <div className={`fixed top-0 left-0 right-0 z-20 flex items-center justify-between p-4 md:p-6 transition-all duration-300 ${!isChatCollapsed ? 'pr-[22rem]' : 'pr-4'} bg-gradient-to-b from-white/80 via-white/50 to-transparent`}>
-         {/* Left side: Title and Manage/Auth button */}
          <div className="flex items-center space-x-4">
             <h1 className="text-2xl md:text-3xl font-semibold text-transparent bg-clip-text bg-gradient-to-r from-slate-600 to-gray-800 py-1">
               Story Weaver AI
@@ -436,107 +586,153 @@ export default function Home() {
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline -mt-0.5 mr-1 opacity-70" viewBox="0 0 20 20" fill="currentColor">
                       <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
                     </svg>
-                  Manage your story
+                  Manage Stories
                 </button>
               ) : (
                 <AuthButton onSignInClick={openAuthModal} />
               )
             )}
-          </div>
+            {activeStoryDetails && !isLoadingStoryDetails && (
+                <div className="text-sm font-medium text-slate-600 border-l pl-4 ml-2">
+                    Editing: <span className="font-semibold">{activeStoryDetails.title}</span>
+                </div>
+            )}
+         </div>
        </div>
 
       <div className={`w-full max-w-3xl bg-white/70 backdrop-blur-md rounded-xl shadow-lg p-8 border border-gray-200/50 mb-8 transition-all duration-300 ${!isChatCollapsed ? 'mr-[22rem]' : 'mr-0'} mt-20`}>
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div>
-            <label htmlFor="synopsis" className="block text-sm font-medium text-gray-700 mb-1">Synopsis</label>
-            <textarea
-              id="synopsis"
-              name="synopsis"
-              rows={4}
-              className="w-full p-3 border border-gray-300/70 rounded-lg shadow-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500 bg-white/80 placeholder-gray-400 transition duration-150 ease-in-out"
-              placeholder="A lone astronaut discovers an ancient artifact on Mars..."
-              value={synopsis}
-              onChange={(e) => setSynopsis(e.target.value)}
-              required
-            />
-          </div>
-
-          <div>
-            <label htmlFor="styleNote" className="block text-sm font-medium text-gray-700 mb-1">Style Note</label>
-            <textarea
-              id="styleNote"
-              name="styleNote"
-              rows={3}
-              className="w-full p-3 border border-gray-300/70 rounded-lg shadow-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500 bg-white/80 placeholder-gray-400 transition duration-150 ease-in-out"
-              placeholder="Evoke a sense of cosmic horror and isolation, minimalist prose..."
-              value={styleNote}
-              onChange={(e) => setStyleNote(e.target.value)}
-              required
-            />
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-                <label htmlFor="length" className="block text-sm font-medium text-gray-700 mb-1">Desired Length (words)</label>
-                <input
-                type="number"
-                id="length"
-                name="length"
-                className="w-full p-3 border border-gray-300/70 rounded-lg shadow-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500 bg-white/80 placeholder-gray-400 transition duration-150 ease-in-out [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" // Hide number spinners
-                placeholder="e.g., 500"
-                value={length}
-                onChange={(e) => setLength(e.target.value === '' ? '' : parseInt(e.target.value, 10))}
-                required
-                min="1"
-                />
+        {isLoadingStoryDetails && (
+            <p className="text-center text-slate-500 py-4">Loading story details...</p>
+         )}
+         {storyDetailsError && (
+            <div className="mb-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded-lg">
+                <p className="font-medium">Error loading story:</p> <p>{storyDetailsError}</p>
             </div>
-            <div className="flex items-center justify-start md:justify-end md:pt-7">
-                <div className="flex items-center h-5">
+         )}
+
+        {!isLoadingStoryDetails && !storyDetailsError && (
+            <form onSubmit={handleSubmit} className="space-y-6">
+            {activeStoryDetails ? (
+                <>
+                    <div className="space-y-4 p-4 bg-slate-50/60 rounded-lg border border-slate-200/70">
+                       <h3 className="text-lg font-semibold text-slate-700">Story Context: {activeStoryDetails.title}</h3>
+                        {activeStoryDetails.global_synopsis && (
+                            <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Global Synopsis</label>
+                                <p className="text-sm text-gray-800 bg-white/50 p-2 rounded border border-gray-200/50 whitespace-pre-wrap">{activeStoryDetails.global_synopsis}</p>
+                            </div>
+                        )}
+                        {activeStoryDetails.global_style_note && (
+                             <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Global Style Note</label>
+                                <p className="text-sm text-gray-800 bg-white/50 p-2 rounded border border-gray-200/50 whitespace-pre-wrap">{activeStoryDetails.global_style_note}</p>
+                            </div>
+                        )}
+                        {!activeStoryDetails.global_synopsis && !activeStoryDetails.global_style_note && (
+                            <p className="text-sm text-slate-500 italic">No global synopsis or style note set for this story.</p>
+                        )}
+                    </div>
+
+                     <div>
+                        <label htmlFor="partInstructions" className="block text-sm font-medium text-gray-700 mb-1">Instructions for Next Part</label>
+                        <textarea
+                          id="partInstructions"
+                          name="partInstructions"
+                          rows={4}
+                          className="w-full p-3 border border-gray-300/70 rounded-lg shadow-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500 bg-white/80 placeholder-gray-400 transition duration-150 ease-in-out"
+                          placeholder="Describe what should happen in this section, characters involved, key events, tone shifts..."
+                          value={partInstructions}
+                          onChange={(e) => setPartInstructions(e.target.value)}
+                          required
+                        />
+                      </div>
+                </>
+            ) : (
+                 <>
+                    <div>
+                        <label htmlFor="synopsis" className="block text-sm font-medium text-gray-700 mb-1">Synopsis</label>
+                        <textarea
+                          id="synopsis" name="synopsis" rows={4}
+                          className="w-full p-3 border border-gray-300/70 rounded-lg shadow-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500 bg-white/80 placeholder-gray-400 transition duration-150 ease-in-out"
+                          placeholder="A lone astronaut discovers an ancient artifact on Mars..."
+                          value={synopsis} onChange={(e) => setSynopsis(e.target.value)} required
+                        />
+                    </div>
+                     <div>
+                        <label htmlFor="styleNote" className="block text-sm font-medium text-gray-700 mb-1">Style Note</label>
+                        <textarea
+                          id="styleNote" name="styleNote" rows={3}
+                          className="w-full p-3 border border-gray-300/70 rounded-lg shadow-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500 bg-white/80 placeholder-gray-400 transition duration-150 ease-in-out"
+                          placeholder="Evoke a sense of cosmic horror and isolation, minimalist prose..."
+                          value={styleNote} onChange={(e) => setStyleNote(e.target.value)} required
+                        />
+                    </div>
+                 </>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label htmlFor="length" className="block text-sm font-medium text-gray-700 mb-1">Desired Length (words)</label>
                     <input
-                        id="useWebSearch"
-                        aria-describedby="useWebSearch-description"
-                        name="useWebSearch"
-                        type="checkbox"
-                        checked={useWebSearch}
-                        onChange={(e) => setUseWebSearch(e.target.checked)}
-                        className="focus:ring-slate-500 h-4 w-4 text-slate-600 border-gray-300/70 rounded transition duration-150 ease-in-out"
+                        type="number" id="length" name="length"
+                        className="w-full p-3 border border-gray-300/70 rounded-lg shadow-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500 bg-white/80 placeholder-gray-400 transition duration-150 ease-in-out [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        placeholder="e.g., 500" value={length}
+                        onChange={(e) => setLength(e.target.value === '' ? '' : parseInt(e.target.value, 10))}
+                        required min="1"
                     />
                 </div>
-                <div className="ml-3 text-sm">
-                    <label htmlFor="useWebSearch" className="font-medium text-gray-700">Use Web Search</label>
-                    <p id="useWebSearch-description" className="text-xs text-gray-500">Allow AI to search the web for relevant info (if needed).</p>
+                <div className="flex items-center justify-start md:justify-end md:pt-7">
+                    <div className="flex items-center h-5">
+                         <input id="useWebSearch" name="useWebSearch" type="checkbox"
+                            checked={useWebSearch} onChange={(e) => setUseWebSearch(e.target.checked)}
+                            className="focus:ring-slate-500 h-4 w-4 text-slate-600 border-gray-300/70 rounded transition duration-150 ease-in-out"
+                         />
+                    </div>
+                     <div className="ml-3 text-sm">
+                        <label htmlFor="useWebSearch" className="font-medium text-gray-700">Use Web Search</label>
+                        <p id="useWebSearch-description" className="text-xs text-gray-500">Allow AI to search the web (if needed).</p>
+                    </div>
                 </div>
             </div>
-          </div>
 
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              disabled={isLoading || isAccepting || isRefining}
-              className={`inline-flex justify-center py-2 px-6 border border-transparent shadow-sm text-sm font-medium rounded-md text-white transition duration-150 ease-in-out ${(isLoading || isAccepting || isRefining) ? 'bg-gray-400 cursor-not-allowed' : 'bg-gradient-to-r from-slate-600 to-gray-800 hover:from-slate-700 hover:to-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500'}`}
-            >
-              {isLoading ? (
-                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-              ) : null}
-              {isLoading ? 'Weaving...' : 'Generate Story Section'}
-            </button>
-          </div>
-        </form>
+            <div className="flex items-center justify-between pt-4 border-t border-slate-200/60">
+                 {activeStoryId && (
+                     <button
+                        type="button"
+                        onClick={handleUnloadStory}
+                        className="py-2 px-4 border border-slate-400 text-slate-600 rounded-md text-sm font-medium hover:bg-slate-100 transition duration-150 ease-in-out"
+                     >
+                        ← Unload Story / New Idea
+                     </button>
+                 )}
+                 {!activeStoryId && <div />}
+
+                <button
+                  type="submit"
+                  disabled={isLoading || isAccepting || isRefining || isLoadingStoryDetails}
+                  className={`inline-flex justify-center py-2 px-6 border border-transparent shadow-sm text-sm font-medium rounded-md text-white transition duration-150 ease-in-out ${(isLoading || isAccepting || isRefining || isLoadingStoryDetails) ? 'bg-gray-400 cursor-not-allowed' : 'bg-gradient-to-r from-slate-600 to-gray-800 hover:from-slate-700 hover:to-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500'}`}
+                >
+                  {isLoading ? (
+                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"> <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle> <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path> </svg>
+                  ) : null}
+                  {isLoading ? 'Weaving...' : (activeStoryId ? 'Generate Next Part' : 'Generate Story Section')}
+                </button>
+             </div>
+            </form>
+        )}
 
         {error && (
           <div className="mt-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg">
-            <p className="font-medium">Error:</p>
-            <p>{error}</p>
+            <p className="font-medium">Error:</p> <p>{error}</p>
           </div>
         )}
 
         {generatedStory && (
           <div className="mt-8 p-6 bg-slate-50/50 border border-slate-200/80 rounded-lg shadow-inner space-y-4">
-            <h2 className="text-xl font-semibold text-slate-700">Generated Story (ID: {currentGenerationId?.substring(0, 8)}...):</h2>
-            <EditableText 
+            <h2 className="text-xl font-semibold text-slate-700">
+                {activeStoryId ? 'Generated Next Part' : 'Generated Story'} (ID: {currentGenerationId?.substring(0, 8)}...):
+            </h2>
+            <EditableText
               value={generatedStory}
               onChange={setGeneratedStory}
               placeholder="Your story will appear here..."
@@ -545,18 +741,15 @@ export default function Home() {
               diffStartIndex={diffStartIndex}
               diffEndIndex={diffEndIndex}
             />
-            
+
             {currentGenerationId && acceptStatus?.type !== 'success' && (
                 <div>
                    <label htmlFor="refinementFeedback" className="block text-sm font-medium text-gray-700 mb-1">Refinement Instructions:</label>
                    <textarea
-                       id="refinementFeedback"
-                       name="refinementFeedback"
-                       rows={2}
+                       id="refinementFeedback" name="refinementFeedback" rows={2}
                        className="w-full p-2 border border-gray-300/70 rounded-md shadow-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white/90 placeholder-gray-400 transition duration-150 ease-in-out disabled:opacity-70 disabled:bg-gray-50"
                        placeholder="e.g., Make the tone more optimistic, add more dialogue..."
-                       value={refinementFeedback}
-                       onChange={(e) => setRefinementFeedback(e.target.value)}
+                       value={refinementFeedback} onChange={(e) => setRefinementFeedback(e.target.value)}
                        disabled={isRefining || isAccepting}
                    />
                 </div>
@@ -568,7 +761,6 @@ export default function Home() {
                         {acceptStatus.message}
                     </span>
                 )}
-              
               <div className="flex space-x-3 w-full sm:w-auto justify-end">
                 <button 
                   onClick={handleAccept}
@@ -599,100 +791,70 @@ export default function Home() {
 
       </div>
 
-      <div className={`w-full max-w-3xl bg-white/60 backdrop-blur-md rounded-xl shadow-lg p-8 border border-gray-200/40 transition-all duration-300 ${!isChatCollapsed ? 'mr-[22rem]' : 'mr-0'} mb-8`}>
-        
-        {!user && !authLoading && (
-           <p className="text-xs text-slate-500 mb-4">
-             Sign up so your snippets don't vanish.
-           </p>
-        )}
+      {activeStoryId && !isLoadingStoryDetails && activeStoryDetails && (
+        <div className={`w-full max-w-3xl bg-white/60 backdrop-blur-md rounded-xl shadow-lg p-8 border border-gray-200/40 transition-all duration-300 ${!isChatCollapsed ? 'mr-[22rem]' : 'mr-0'} mb-8`}>
+           <h2 className="text-xl font-semibold text-slate-700 mb-4 border-b pb-2">
+             Story Parts: {activeStoryDetails.title}
+           </h2>
 
-        {historyError && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-300 text-red-600 rounded-lg text-sm">
-                <p><span className="font-medium">Error loading history:</span> {historyError}</p>
-            </div>
-        )}
+           {isLoadingStoryParts && <p className="text-slate-500 text-center py-4">Loading story parts...</p>}
+           {storyPartsError && (
+              <div className="mb-4 p-3 bg-red-50 border border-red-300 text-red-600 rounded-lg text-sm">
+                  <p><span className="font-medium">Error loading parts:</span> {storyPartsError}</p>
+              </div>
+           )}
 
-        {(authLoading || (isLoadingHistory && !historyError)) && (
-            <p className="text-slate-500 text-center py-4">Loading history...</p>
-        )}
+           {!isLoadingStoryParts && !storyPartsError && currentStoryParts.length === 0 && (
+              <p className="text-slate-500 text-center py-4 italic">This story doesn't have any parts yet. Generate the first one above!</p>
+           )}
 
-        {!authLoading && !isLoadingHistory && !historyError && pastGenerations.length === 0 && user && (
-            <p className="text-slate-500 text-center py-4">No past generations found for your account.</p>
-        )}
-        {!authLoading && !isLoadingHistory && !historyError && pastGenerations.length === 0 && !user && anonUserIdentifier && (
-            <p className="text-slate-500 text-center py-4">No past generations found for this browser session.</p>
-        )}
-        {!authLoading && !isLoadingHistory && !historyError && pastGenerations.length === 0 && !user && !anonUserIdentifier && (
-            <p className="text-slate-500 text-center py-4">Initializing anonymous session...</p>
-        )}
-
-        {!authLoading && !isLoadingHistory && !historyError && pastGenerations.length > 0 && (
-            <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
-                {pastGenerations.map((gen) => (
-                    <div key={gen.id} className={`p-4 rounded-lg border ${gen.is_accepted ? 'bg-green-50/70 border-green-200' : 'bg-white/80 border-gray-200/80'}`}> 
-                        <p className="text-xs text-gray-500 mb-1">
-                          {new Date(gen.created_at!).toLocaleString()} - ID: {gen.id?.substring(0, 8)}...
-                          {gen.is_accepted && <span className="ml-2 font-semibold text-green-700">[Accepted]</span>}
-                        </p>
-                        <p className="text-sm font-medium text-gray-800 mb-1">
-                            {gen.parent_generation_id 
-                                ? <>Refinement based on parent <span className="font-mono text-xs">{gen.parent_generation_id.substring(0, 8)}...</span></>
-                                : <>Initial prompt from synopsis</>
-                            }
-                        </p>
-                        {gen.synopsis && (
-                            <p className="text-xs text-gray-600 mb-1"><span className="font-semibold">Synopsis:</span> {gen.synopsis.substring(0, 100)}{gen.synopsis.length > 100 ? '...' : ''}</p>
-                        )}
-                        {gen.iteration_feedback && (
-                             <p className="text-xs text-gray-600 mb-1"><span className="font-semibold">Feedback:</span> {gen.iteration_feedback.substring(0, 100)}{gen.iteration_feedback.length > 100 ? '...' : ''}</p>
-                        )}
-                        {gen.style_note && (
-                            <p className="text-xs text-gray-600 mb-2"><span className="font-semibold">Style:</span> {gen.style_note.substring(0, 100)}{gen.style_note.length > 100 ? '...' : ''}</p>
-                        )}
-                        {gen.generated_story && (
-                            <div className="mt-2">
-                                <EditableText 
-                                    value={gen.generated_story}
-                                    onChange={(newValue) => {
-                                        // Update the story in the pastGenerations state
-                                        setPastGenerations(prev => 
-                                            prev.map(item => 
-                                                item.id === gen.id 
-                                                    ? {...item, generated_story: newValue} 
-                                                    : item
-                                            )
-                                        );
-                                    }}
-                                    placeholder="Story content..."
-                                    className="bg-white/80 rounded-md"
-                                />
-                                <div className="mt-2 flex justify-end">
-                                    <button
-                                        onClick={() => {
-                                            setGeneratedStory(gen.generated_story || '');
-                                            setCurrentGenerationId(gen.id || null);
-                                            setSynopsis(gen.synopsis || '');
-                                            setStyleNote(gen.style_note || '');
-                                            setLength(gen.requested_length || 500);
-                                            setUseWebSearch(gen.use_web_search || false);
-                                            setRefinementFeedback('');
-                                            setAcceptStatus(null);
-                                            // Scroll to the top of the page
-                                            window.scrollTo({ top: 0, behavior: 'smooth' });
-                                        }}
-                                        className="py-1 px-3 text-xs border border-slate-400 text-slate-600 rounded hover:bg-slate-100 transition"
-                                    >
-                                        Load into Editor
-                                    </button>
-                                </div>
+           {!isLoadingStoryParts && !storyPartsError && currentStoryParts.length > 0 && (
+              <div className="space-y-6 max-h-[60vh] overflow-y-auto pr-2 border rounded-lg p-4 bg-slate-50/30">
+                  {currentStoryParts.map((part, index) => {
+                      const partSavingState = storyPartsSavingStates[part.id] || { isLoading: false, error: null, success: false };
+                      return (
+                        <div key={part.id} className={`p-4 rounded-lg border transition-shadow duration-150 ${part.is_accepted ? 'bg-green-50/70 border-green-200 shadow-sm' : 'bg-white/80 border-gray-200/80'}`}>
+                            <div className="flex justify-between items-center mb-2">
+                                <p className="text-sm font-medium text-gray-800">
+                                    Part {index + 1}
+                                    {part.is_accepted && <span className="ml-2 text-xs font-semibold text-green-700 py-0.5 px-1.5 rounded bg-green-100 border border-green-200">[Latest Accepted]</span>}
+                                </p>
+                                <p className="text-xs text-gray-500">
+                                    ID: {part.id?.substring(0, 8)}...
+                                </p>
                             </div>
-                        )}
-                    </div>
-                ))}
-            </div>
-        )}
-      </div>
+                            {part.iteration_feedback && (
+                              <p className="text-xs text-gray-600 mb-1 italic border-l-2 border-slate-300 pl-2">
+                                  <span className="font-semibold">Refinement Feedback:</span> {part.iteration_feedback.substring(0,150)}{part.iteration_feedback.length > 150 ? '...' : ''}
+                              </p>
+                             )}
+                            <EditableText
+                                value={part.generated_story || ''}
+                                onChange={(newContent) => handleStoryPartChange(part.id, newContent)}
+                                placeholder="Edit story content..."
+                                className="bg-white/90 rounded-md border border-gray-300/50 focus-within:ring-1 focus-within:ring-slate-400 focus-within:border-slate-400"
+                            />
+                            <div className="mt-2 flex justify-end items-center space-x-3">
+                                {partSavingState.error && (
+                                    <span className="text-xs text-red-600">Error: {partSavingState.error}</span>
+                                )}
+                                {partSavingState.success && (
+                                    <span className="text-xs text-green-600">Saved!</span>
+                                )}
+                                <button
+                                    onClick={() => handleSaveChangesForPart(part.id)}
+                                    disabled={partSavingState.isLoading}
+                                    className={`py-1 px-3 text-xs border rounded transition duration-150 ease-in-out ${partSavingState.isLoading ? 'bg-gray-200 text-gray-500 cursor-wait' : 'border-slate-400 text-slate-600 hover:bg-slate-100 focus:outline-none focus:ring-1 focus:ring-offset-1 focus:ring-slate-400 disabled:opacity-50'}`}
+                                >
+                                    {partSavingState.isLoading ? 'Saving...' : 'Save Changes'}
+                                </button>
+                            </div>
+                        </div>
+                    )})}
+              </div>
+           )}
+        </div>
+      )}
 
       <Chat
         className="z-50"
@@ -711,6 +873,7 @@ export default function Home() {
         isOpen={isDashboardOpen} 
         onClose={closeDashboard} 
         user={user}
+        setActiveStoryId={setActiveStoryId}
       />
     </main>
   );

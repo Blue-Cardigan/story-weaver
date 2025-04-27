@@ -1,6 +1,6 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { cookies } from 'next/headers'
-import type { StoryGeneration } from '@/types/supabase'; // Import from new types file
+import type { Database } from '@/types/supabase'; // Import from new types file
 
 // EXPORT a function to create a server client
 // This function should be called from server components/routes.
@@ -18,7 +18,7 @@ export function createSupabaseServerClient() {
     throw new Error("Missing environment variable: NEXT_PUBLIC_SUPABASE_ANON_KEY")
   }
 
-  return createServerClient<StoryGeneration>(
+  return createServerClient<Database>(
     supabaseUrl,
     supabaseAnonKey,
     {

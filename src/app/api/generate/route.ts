@@ -1,7 +1,8 @@
 import { GoogleGenAI, Content, Tool, GenerationConfig } from "@google/genai";
 import { createSupabaseServerClient } from "@/lib/supabaseServerClient";
-import type { StoryGeneration } from "@/types/supabase";
+import { Database } from "@/types/supabase"; // Import Database type
 import { NextResponse } from 'next/server';
+import { cookies } from "next/headers"; // Import cookies
 
 const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) {
@@ -20,13 +21,16 @@ interface CustomGenerationConfig extends GenerationConfig {
     tools?: Tool[];
 }
 
-const generationConfig: CustomGenerationConfig = {
+const baseGenerationConfig: CustomGenerationConfig = {
   temperature: 0.9,
   topP: 0.95,
   topK: 40,
   responseMimeType: "text/plain",
-  // tools property removed from here, will be added conditionally later
 };
+
+// Define the type for generation data more accurately based on schema
+type GenerationRecord = Database['public']['Tables']['story_generations']['Row'];
+type NewGenerationPayload = Database['public']['Tables']['story_generations']['Insert'];
 
 // Helper type for Supabase fetch
 interface FetchedGeneration {
@@ -37,8 +41,8 @@ interface FetchedGeneration {
     iteration_feedback: string | null; // Needed to reconstruct user prompts
 }
 
-// Function to fetch full generation chain recursively
-async function fetchGenerationChain(id: string, supabase: ReturnType<typeof createSupabaseServerClient>): Promise<FetchedGeneration[]> {
+// Fetches the direct parent for simple refinement context (not full chain needed here)
+async function fetchParentGeneration(id: string, supabase: ReturnType<typeof createSupabaseServerClient>): Promise<FetchedGeneration | null> {
     const { data, error } = await supabase
       .from('story_generations')
       .select('id, prompt, generated_story, parent_generation_id, iteration_feedback')
@@ -46,41 +50,75 @@ async function fetchGenerationChain(id: string, supabase: ReturnType<typeof crea
       .single();
 
     if (error || !data) {
-      console.error(`Error fetching generation ${id} for history:`, error);
-      return []; // Return empty if error or not found
+      console.error(`Error fetching parent generation ${id}:`, error);
+      return null;
     }
-
-    const currentGen = data as FetchedGeneration;
-    if (currentGen.parent_generation_id) {
-        const parentChain = await fetchGenerationChain(currentGen.parent_generation_id, supabase);
-        return [...parentChain, currentGen]; // Append current to parent chain
-    } else {
-        return [currentGen]; // Base case: initial generation
-    }
+    return data as FetchedGeneration;
 }
 
-
 export async function POST(request: Request) {
-  // Instantiate Supabase server client here
-  const supabase = createSupabaseServerClient();
+  // const cookieStore = cookies(); // No longer need to get it here
+  const supabase = createSupabaseServerClient(); // Call without arguments
 
   // Get authenticated user
   const { data: { user } } = await supabase.auth.getUser();
 
   try {
-    const { synopsis, styleNote, length, useWebSearch, parentId, refinementFeedback, userIdentifier } = await request.json();
+    const {
+        // Standalone generation fields
+        synopsis,
+        styleNote, // Keep styleNote for both modes
+
+        // Story-centric generation fields
+        storyId,
+        partInstructions,
+        globalSynopsis, // Read-only context, may not be needed directly in prompt if history is good
+        globalStyleNote, // Use this if available, otherwise use styleNote
+        previousPartContent, // Direct context from the last part
+
+        // Common fields
+        length,
+        useWebSearch,
+        parentId,
+        refinementFeedback,
+        userIdentifier, // For anonymous users
+    } = await request.json();
 
     // Validation: Check for user OR identifier
     if (!user && !userIdentifier) {
       return NextResponse.json({ error: 'Missing user identifier or authentication' }, { status: 401 });
     }
 
-    if (!styleNote || !length || (!synopsis && !parentId)) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    if (!length || length <= 0) {
+        return NextResponse.json({ error: 'Valid length is required' }, { status: 400 });
     }
 
+    // Mode-specific validation
+    if (storyId) {
+        // Story mode: partInstructions are key, styleNote can be fallback
+        if (!partInstructions && !refinementFeedback) { // Need instructions unless refining
+             return NextResponse.json({ error: 'Missing partInstructions for new story part' }, { status: 400 });
+        }
+        if (!styleNote && !globalStyleNote) {
+            return NextResponse.json({ error: 'Missing styleNote or globalStyleNote for story part' }, { status: 400 });
+        }
+    } else if (!parentId) {
+        // Standalone initial generation: synopsis and styleNote needed
+        if (!synopsis || !styleNote) {
+            return NextResponse.json({ error: 'Missing synopsis or styleNote for standalone generation' }, { status: 400 });
+        }
+    } else {
+         // Standalone refinement: refinementFeedback needed
+         if (!refinementFeedback || !styleNote) {
+             return NextResponse.json({ error: 'Missing refinementFeedback or styleNote for standalone refinement' }, { status: 400 });
+         }
+    }
+
+    // Determine effective style
+    const effectiveStyleNote = globalStyleNote || styleNote; // Prefer global if available
+
     // Create a local config for this request based on the base config
-    const requestConfig: CustomGenerationConfig = { ...generationConfig };
+    const requestConfig: CustomGenerationConfig = { ...baseGenerationConfig };
 
     if (useWebSearch) {
         requestConfig.tools = [groundingTool]; // Add tools only if needed
@@ -88,35 +126,55 @@ export async function POST(request: Request) {
 
     const historyContents: Content[] = [];
     let currentPromptText = '';
+    let basePromptForDb = ''; // Store the core instruction
 
     if (parentId) {
-      if (!refinementFeedback) {
-        return NextResponse.json({ error: 'Missing refinementFeedback for refinement request' }, { status: 400 });
-      }
-      const fullChain = await fetchGenerationChain(parentId, supabase);
-      if (fullChain.length === 0) {
-        console.warn(`Could not fetch history for parentId ${parentId}. Proceeding without history.`);
-      } else {
-        fullChain.forEach((gen, index) => {
-          let userPromptText: string | null = null;
-          if (index === 0) {
-              userPromptText = gen.prompt;
-          } else {
-              userPromptText = `Refine the previous story segment based on the following feedback: ${gen.iteration_feedback}`;
-          }
-          if (userPromptText && gen.generated_story) {
-              historyContents.push({ role: "user", parts: [{ text: userPromptText }] });
-              historyContents.push({ role: "model", parts: [{ text: gen.generated_story }] });
-          }
-        });
-      }
-       currentPromptText = `Refine the previous story segment based on the following feedback. Incorporate web search results if relevant. Keep the style similar (Style Note: ${styleNote}) and aim for length ~${length} words.\n\nFeedback: ${refinementFeedback}\n\nRefined Story Segment:`;
+        // Refinement Logic (applies to both story and standalone)
+        if (!refinementFeedback) {
+            return NextResponse.json({ error: 'Missing refinementFeedback for refinement request' }, { status: 400 });
+        }
+
+        const parentGen = await fetchParentGeneration(parentId, supabase);
+        if (parentGen?.generated_story) {
+            historyContents.push({ role: "model", parts: [{ text: parentGen.generated_story }] });
+        } else {
+             console.warn(`Could not fetch parent ${parentId} or it lacked content for refinement history.`);
+        }
+
+        basePromptForDb = refinementFeedback; // The feedback is the core instruction
+        currentPromptText = `Refine the previous story segment based on the following feedback. Maintain the established style (Style Note: ${effectiveStyleNote}) and aim for a length of approximately ${length} words. Incorporate web search results if relevant and helpful.\n\nFeedback:\n${refinementFeedback}\n\nRefined Story Segment:`;
+
+    } else if (storyId) {
+        // Story Part Generation Logic
+        if (!partInstructions) {
+             return NextResponse.json({ error: 'Missing partInstructions for new story part' }, { status: 400 });
+        }
+
+        if (previousPartContent) {
+            // Add the previous part as model context if it exists
+            historyContents.push({ role: "model", parts: [{ text: previousPartContent }] });
+        } else {
+            // This is the first part of the story. Use global synopsis/style as initial context if available.
+             if (globalSynopsis) {
+                // Maybe add a system message or user message with the global context?
+                // Let's add it to the main prompt for simplicity now.
+             }
+        }
+
+        basePromptForDb = partInstructions; // The instructions are the core prompt
+        let initialContext = '';
+        if (!previousPartContent && globalSynopsis) {
+            initialContext = `You are writing a story. You should output only the story text for this part, without any other text or commentary. Here is the overall synopsis:\n${globalSynopsis}\n\n`;
+        }
+        currentPromptText = `${initialContext}Continue the story based on the previous part (if provided). Write the next part according to these instructions, keeping the style consistent and aiming for a length of approximately ${length} words. Style Note: ${effectiveStyleNote}\n Incorporate web search results if relevant and helpful.\n\nInstructions for this part:\n${partInstructions}\n\nNext Story Part:`;
 
     } else {
-      if (!synopsis) {
+      // Standalone Initial Generation Logic
+       if (!synopsis) {
          return NextResponse.json({ error: 'Missing synopsis for initial generation' }, { status: 400 });
       }
-      currentPromptText = `Flesh out the following synopsis section into a story segment of approximately ${length} words. Incorporate web search results if relevant.\n\nStyle Note: ${styleNote}\n\nSynopsis Section:\n${synopsis}\n\nStory Segment:`;
+       basePromptForDb = synopsis; // The synopsis is the core prompt
+       currentPromptText = `Flesh out the following synopsis into a story segment of approximately ${length} words. Adhere to the specified style. Incorporate web search results if relevant and helpful.\n\nStyle Note: ${effectiveStyleNote}\n\nSynopsis:\n${synopsis}\n\nStory Segment:`;
     }
 
     const contents: Content[] = [
@@ -168,15 +226,20 @@ export async function POST(request: Request) {
     }
 
     // --- Prepare data for Supabase insert ---
-    const generationData: Partial<StoryGeneration> = {
-      synopsis: parentId ? null : synopsis,
-      style_note: styleNote,
+    const generationData: Partial<NewGenerationPayload> = {
+      story_id: storyId || null, // Include storyId if provided
+      synopsis: parentId ? null : (storyId ? null : synopsis), // Store synopsis only for standalone initial
+      part_instructions: storyId && !parentId ? partInstructions : null, // Store instructions for new story parts
+      global_context_synopsis: storyId ? globalSynopsis : null, // Store context used
+      global_context_style: storyId ? globalStyleNote : null, // Store context used
+      style_note: styleNote, // Always store the specific style note used for this generation
       requested_length: parseInt(length, 10),
       use_web_search: !!useWebSearch,
-      prompt: currentPromptText,
+      prompt: basePromptForDb, // Store the core user instruction (synopsis/instructions/feedback)
       generated_story: generatedText,
       parent_generation_id: parentId,
-      iteration_feedback: refinementFeedback,
+      iteration_feedback: refinementFeedback, // Store refinement feedback if provided
+      // is_accepted will be set by the /api/accept endpoint
     };
 
     // Add user_id if logged in, otherwise add user_identifier
@@ -189,7 +252,7 @@ export async function POST(request: Request) {
     // --- Save to Supabase ---
     const { data: insertData, error: supabaseError } = await supabase
       .from('story_generations')
-      .insert([generationData]) // Use the prepared object
+      .insert(generationData as NewGenerationPayload) // Use correct type
       .select('id')
       .single();
 

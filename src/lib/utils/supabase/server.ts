@@ -1,6 +1,6 @@
 import { type CookieOptions, createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
-import { type StoryGeneration } from '@/types/supabase'
+import { type Database } from '@/types/supabase'
 
 // This function is designed to be used in Server Components, Server Actions,
 // and Route Handlers, leveraging the `cookies` function from `next/headers`.
@@ -16,7 +16,7 @@ export function createSupabaseServerClient() {
     throw new Error("Missing Supabase environment variables for server client.");
   }
 
-  return createServerClient<StoryGeneration>( // Use just the StoryGeneration type
+  return createServerClient<Database>( // Use just the StoryGeneration type
     supabaseUrl, 
     supabaseAnonKey, 
     {
@@ -61,7 +61,7 @@ export function createSupabaseServerClientReadOnly() {
     throw new Error("Missing Supabase environment variables for server client.");
   }
 
-  return createServerClient<StoryGeneration>( // Use just the StoryGeneration type
+  return createServerClient<Database>( // Use just the StoryGeneration type
     supabaseUrl, 
     supabaseAnonKey, 
     {

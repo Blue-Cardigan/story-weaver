@@ -1,23 +1,30 @@
 import { createSupabaseServerClient } from "@/lib/supabaseServerClient";
 import { NextResponse } from 'next/server';
+import { Database } from "@/types/supabase"; // Import Database type
+
+type StoryGenerationUpdate = Partial<Database['public']['Tables']['story_generations']['Update']>;
 
 export async function POST(request: Request) {
   const supabase = createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
 
   try {
-    const { generationId } = await request.json();
-    const userIdentifierHeader = request.headers.get('X-User-Identifier'); // Get anonymous ID from header
+    // Expect generationId AND editedContent from the body
+    const { generationId, editedContent } = await request.json();
+    const userIdentifierHeader = request.headers.get('X-User-Identifier');
 
     if (!generationId) {
       return NextResponse.json({ error: 'Missing generationId' }, { status: 400 });
     }
+    // Validate editedContent - it should exist even if empty
+    if (typeof editedContent !== 'string') {
+       return NextResponse.json({ error: 'Missing or invalid editedContent field' }, { status: 400 });
+    }
 
-    // --- Authorization Check ---
-    // Fetch the generation to check ownership
+    // --- Fetch Generation for Authorization & Story ID ---
     const { data: generation, error: fetchError } = await supabase
       .from('story_generations')
-      .select('user_id, user_identifier')
+      .select('user_id, user_identifier, story_id')
       .eq('id', generationId)
       .single();
 
@@ -26,40 +33,56 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Generation not found or fetch error' }, { status: 404 });
     }
 
+    // --- Authorization Check ---
     let isAuthorized = false;
     if (user) {
-      // Logged-in user: Check if user_id matches
       isAuthorized = generation.user_id === user.id;
     } else if (userIdentifierHeader) {
-      // Anonymous user: Check if user_identifier matches header
       isAuthorized = generation.user_identifier === userIdentifierHeader;
     }
 
     if (!isAuthorized) {
-      console.warn(`Authorization failed for accept generation ${generationId}. Auth user: ${user?.id}, Header ID: ${userIdentifierHeader}, Record user_id: ${generation.user_id}, Record user_identifier: ${generation.user_identifier}`);
+      console.warn(`Authorization failed for accept generation ${generationId}.`);
       return NextResponse.json({ error: 'Unauthorized to accept this generation' }, { status: 403 });
     }
     // --- End Authorization Check ---
 
+    const storyId = generation.story_id;
 
-    // Update the specific generation record
+    // --- Database Updates ---
+    // Step 1: Un-accept other parts if part of a story
+    // if (storyId) {
+    //   const { error: updateOthersError } = await supabase
+    //     .from('story_generations')
+    //     .update({ is_accepted: false })
+    //     .eq('story_id', storyId)
+    //     .neq('id', generationId);
+
+    //   if (updateOthersError) {
+    //       console.error(`Supabase error un-accepting other parts for story ${storyId}:`, updateOthersError);
+    //   } else {
+    //       console.log(`Un-accepted other parts for story ${storyId}`);
+    //   }
+    // }
+
+    // Step 2: Accept the target generation AND update its content
+    const updateData: StoryGenerationUpdate = {
+        is_accepted: true,
+        generated_story: editedContent // Save the edited content
+    };
+
     const { error: updateError } = await supabase
       .from('story_generations')
-      .update({ is_accepted: true })
+      .update(updateData)
       .eq('id', generationId);
-    
-    // Optional: You could also mark other related generations (e.g., siblings in an iteration chain) as not accepted.
-    // const { error: updateSiblingsError } = await supabase
-    //   .from('story_generations')
-    //   .update({ is_accepted: false })
-    //   .eq('parent_generation_id', parentId) // Need parentId for this
-    //   .neq('id', generationId); // Don't un-accept the one we just accepted
 
     if (updateError) {
-      console.error('Supabase update error:', updateError);
-      return NextResponse.json({ error: 'Failed to update generation status' }, { status: 500 });
+      console.error('Supabase update error accepting target generation:', updateError);
+      return NextResponse.json({ error: 'Failed to update generation status and content' }, { status: 500 });
     }
 
+    // --- Success ---
+    console.log(`Successfully accepted generation ${generationId}${storyId ? ` for story ${storyId}` : ''} with updated content.`);
     return NextResponse.json({ success: true, message: `Generation ${generationId} marked as accepted.` });
 
   } catch (error: any) {
