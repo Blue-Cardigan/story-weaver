@@ -5,6 +5,7 @@ import type { StoryGeneration } from '@/lib/supabaseClient'; // Import the inter
 import EditableText from '@/components/EditableText'; // Import the EditableText component
 import Chat from '@/components/Chat'; // Import the Chat component
 import * as Diff from 'diff'; // Import diff library
+import { v4 as uuidv4 } from 'uuid'; // Import UUID for unique IDs
 
 // Define the structure we expect the AI to return for edits
 // (Mirroring the definition in api/chat/route.ts)
@@ -16,7 +17,10 @@ interface EditProposal {
   text?: string;
 }
 
+const USER_ID_KEY = 'storyWeaverUserId';
+
 export default function Home() {
+  const [userIdentifier, setUserIdentifier] = useState<string | null>(null); // <-- Add state for user ID
   const [synopsis, setSynopsis] = useState('');
   const [styleNote, setStyleNote] = useState('');
   const [length, setLength] = useState<number | ''>(500); // Default length
@@ -40,12 +44,26 @@ export default function Home() {
   const [diffStartIndex, setDiffStartIndex] = useState<number | null>(null); // State for diff start index
   const [diffEndIndex, setDiffEndIndex] = useState<number | null>(null);   // State for diff end index
 
+  // Get or set user identifier on mount
+  useEffect(() => {
+    let userId = localStorage.getItem(USER_ID_KEY);
+    if (!userId) {
+      userId = uuidv4();
+      localStorage.setItem(USER_ID_KEY, userId);
+    }
+    setUserIdentifier(userId);
+  }, []);
+
   // Function to fetch history
   const fetchHistory = async () => {
+    if (!userIdentifier) return; // Don't fetch if ID isn't set yet
+
     setIsLoadingHistory(true);
     setHistoryError(null);
     try {
-      const response = await fetch('/api/history');
+      // Pass userIdentifier as query parameter
+      // Ensure userIdentifier is not null before encoding - added check above
+      const response = await fetch(`/api/history?user_identifier=${encodeURIComponent(userIdentifier)}`); 
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || 'Failed to fetch history data');
@@ -59,10 +77,13 @@ export default function Home() {
     }
   };
 
-  // Fetch history on component mount
+  // Fetch history on component mount and when userIdentifier changes
   useEffect(() => {
-    fetchHistory();
-  }, []);
+    if (userIdentifier) {
+      fetchHistory();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userIdentifier]); // <-- Re-run fetchHistory if userIdentifier changes
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -85,6 +106,11 @@ export default function Home() {
         setIsLoading(false);
         return;
     }
+    if (!userIdentifier) { // Add check for userIdentifier
+        setError('Could not determine user identifier. Please refresh the page.');
+        setIsLoading(false);
+        return;
+    }
 
     try {
       // Call the API route
@@ -98,6 +124,7 @@ export default function Home() {
           styleNote,
           length,
           useWebSearch,
+          userIdentifier, // <-- Add userIdentifier to the payload
           // parentId: null, // Explicitly null for initial generation
           // refinementFeedback: null, // Explicitly null for initial generation
         }),
@@ -159,7 +186,7 @@ export default function Home() {
 
   // --- Handler for Refine button ---
   const handleRefine = async () => {
-    if (!currentGenerationId || !refinementFeedback.trim() || isRefining || isAccepting || acceptStatus?.type === 'success') {
+    if (!currentGenerationId || !refinementFeedback.trim() || isRefining || isAccepting || acceptStatus?.type === 'success' || !userIdentifier) { // Add check for userIdentifier
         return; // Don't run if invalid state
     }
 
@@ -180,6 +207,7 @@ export default function Home() {
           useWebSearch: useWebSearch, 
           parentId: currentGenerationId, 
           refinementFeedback: refinementFeedback, 
+          userIdentifier: userIdentifier, // <-- Add userIdentifier to the payload
           // synopsis is likely not needed here as context comes from parentId
         }),
       });
@@ -474,7 +502,7 @@ export default function Home() {
                 
                 <button 
                   onClick={handleRefine}
-                  disabled={!currentGenerationId || !refinementFeedback.trim() || isRefining || isAccepting || acceptStatus?.type === 'success'} 
+                  disabled={!currentGenerationId || !refinementFeedback.trim() || isRefining || isAccepting || acceptStatus?.type === 'success' || !userIdentifier} 
                   className={`py-1 px-4 border rounded text-sm font-medium transition duration-150 ease-in-out 
                               ${isRefining ? 'bg-gray-200 text-gray-500 cursor-wait' : 
                                'border-blue-600 text-blue-700 hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed'}
@@ -496,7 +524,7 @@ export default function Home() {
           <h2 className="text-2xl font-semibold text-slate-700">Generation History</h2>
           <button 
             onClick={fetchHistory} 
-            disabled={isLoadingHistory}
+            disabled={isLoadingHistory || !userIdentifier} // <-- Disable if no identifier
             className="py-1 px-3 border border-slate-400 text-slate-600 rounded text-sm hover:bg-slate-100 transition disabled:opacity-50"
           >
             {isLoadingHistory ? 'Loading...' : 'Refresh'}
@@ -509,12 +537,12 @@ export default function Home() {
             </div>
         )}
 
-        {isLoadingHistory && !historyError && (
-            <p className="text-slate-500 text-center py-4">Loading history...</p>
+        {isLoadingHistory && !historyError && !userIdentifier && (
+            <p className="text-slate-500 text-center py-4">Loading user identifier...</p> // <-- Indicate loading ID state
         )}
 
-        {!isLoadingHistory && !historyError && pastGenerations.length === 0 && (
-            <p className="text-slate-500 text-center py-4">No past generations found.</p>
+        {isLoadingHistory && !historyError && pastGenerations.length === 0 && userIdentifier && (
+            <p className="text-slate-500 text-center py-4">No past generations found for this browser.</p> // <-- Updated message
         )}
 
         {!isLoadingHistory && !historyError && pastGenerations.length > 0 && (

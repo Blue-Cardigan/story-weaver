@@ -61,11 +61,16 @@ async function fetchGenerationChain(id: string): Promise<FetchedGeneration[]> {
 
 export async function POST(request: Request) {
   try {
-    const { synopsis, styleNote, length, useWebSearch, parentId, refinementFeedback } = await request.json();
+    const { synopsis, styleNote, length, useWebSearch, parentId, refinementFeedback, userIdentifier } = await request.json();
 
     if (!styleNote || !length || (!synopsis && !parentId)) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
+
+    // Basic validation for userIdentifier (optional, depends on if it's strictly required)
+    // if (!userIdentifier) {
+    //   return NextResponse.json({ error: 'Missing user identifier' }, { status: 400 });
+    // }
 
     // Create a local config for this request based on the base config
     const requestConfig: CustomGenerationConfig = { ...generationConfig };
@@ -167,7 +172,8 @@ export async function POST(request: Request) {
           prompt: currentPromptText,
           generated_story: generatedText,
           parent_generation_id: parentId,
-          iteration_feedback: refinementFeedback
+          iteration_feedback: refinementFeedback,
+          user_identifier: userIdentifier
         },
       ])
       .select('id')
