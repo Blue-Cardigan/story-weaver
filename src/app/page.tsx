@@ -416,36 +416,33 @@ export default function Home() {
 
   return (
     <main className={`flex min-h-screen flex-col justify-start p-12 md:p-24 bg-gradient-to-br from-gray-50 via-stone-50 to-slate-100 text-gray-800 font-sans transition-all duration-300`}>
+       {/* Header area adjusted for dashboard trigger */}
        <div className={`fixed top-0 left-0 right-0 z-20 flex items-center justify-between p-4 md:p-6 transition-all duration-300 ${!isChatCollapsed ? 'pr-[22rem]' : 'pr-4'} bg-gradient-to-b from-white/80 via-white/50 to-transparent`}>
-        <h1 className="text-2xl md:text-3xl font-semibold text-transparent bg-clip-text bg-gradient-to-r from-slate-600 to-gray-800 py-1">
-          Story Weaver AI
-        </h1>
-         <div className="flex items-center space-x-3">
-           <button 
-              onClick={fetchHistory} 
-              disabled={isLoadingHistory || authLoading || !effectiveIdentifier} 
-              className="hidden sm:inline-flex py-1 px-3 border border-slate-400/50 text-slate-600 rounded text-xs hover:bg-slate-100 transition disabled:opacity-50"
-            >
-              {isLoadingHistory ? 'Loading...' : 'Refresh History'}
-            </button>
-           {!authLoading && (
-             user ? (
-               <button
-                 ref={dashboardTriggerRef}
-                 onClick={openDashboard}
-                 className="text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 rounded py-1 px-2 hover:bg-slate-100/50"
-                 aria-label="Manage your story dashboard"
-               >
-                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline -mt-0.5 mr-1 opacity-70" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
-                  </svg>
-                 Manage
-               </button>
-             ) : (
-               <AuthButton onSignInClick={openAuthModal} />
-             )
-           )}
-         </div>
+         {/* Left side: Title and Manage/Auth button */}
+         <div className="flex items-center space-x-4">
+            <h1 className="text-2xl md:text-3xl font-semibold text-transparent bg-clip-text bg-gradient-to-r from-slate-600 to-gray-800 py-1">
+              Story Weaver AI
+            </h1>
+             {/* Show AuthButton (Sign in/up) or Dashboard Trigger */}
+            {!authLoading && (
+              user ? (
+                <button
+                  ref={dashboardTriggerRef}
+                  onClick={openDashboard}
+                  className="text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 rounded py-1 px-2 hover:bg-slate-100/50"
+                  aria-label="Manage your story dashboard"
+                >
+                  {/* Subtle Icon + Text */} 
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline -mt-0.5 mr-1 opacity-70" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
+                    </svg>
+                  Manage your story
+                </button>
+              ) : (
+                <AuthButton onSignInClick={openAuthModal} />
+              )
+            )}
+          </div>
        </div>
 
       <div className={`w-full max-w-3xl bg-white/70 backdrop-blur-md rounded-xl shadow-lg p-8 border border-gray-200/50 mb-8 transition-all duration-300 ${!isChatCollapsed ? 'mr-[22rem]' : 'mr-0'} mt-20`}>
