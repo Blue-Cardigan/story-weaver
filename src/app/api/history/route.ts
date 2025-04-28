@@ -1,13 +1,11 @@
 import { createSupabaseServerClient } from "@/lib/supabaseServerClient";
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from "next/headers"; // Import cookies
 import { Database } from "@/types/supabase"; // Import Database types
 
 // Define the type for the expected history items
 type HistoryItem = Database['public']['Tables']['story_generations']['Row'];
 
 export async function GET(request: NextRequest) {
-  const cookieStore = cookies();
   const supabase = createSupabaseServerClient(); // Corrected: No argument needed
 
   const { data: { user } } = await supabase.auth.getUser();

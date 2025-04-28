@@ -2,7 +2,6 @@ import { GoogleGenAI, Content, Tool, GenerationConfig } from "@google/genai";
 import { createSupabaseServerClient } from "@/lib/supabaseServerClient";
 import { Database } from "@/types/supabase"; // Import Database type
 import { NextResponse } from 'next/server';
-import { cookies } from "next/headers"; // Import cookies
 
 const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) {
@@ -29,10 +28,9 @@ const baseGenerationConfig: CustomGenerationConfig = {
 };
 
 // Define the type for generation data more accurately based on schema
-type GenerationRecord = Database['public']['Tables']['story_generations']['Row'];
 type NewGenerationPayload = Database['public']['Tables']['story_generations']['Insert'];
+type DbChapter = Database['public']['Tables']['chapters']['Row']; // Add Chapter type
 
-// Helper type for Supabase fetch
 interface FetchedGeneration {
     id: string;
     prompt: string | null;
@@ -56,6 +54,21 @@ async function fetchParentGeneration(id: string, supabase: ReturnType<typeof cre
     return data as FetchedGeneration;
 }
 
+// Helper to fetch chapter details
+async function fetchChapterDetails(id: string, supabase: ReturnType<typeof createSupabaseServerClient>): Promise<DbChapter | null> {
+  const { data, error } = await supabase
+    .from('chapters')
+    .select('id, synopsis, chapter_number, title') // Select needed fields
+    .eq('id', id)
+    .single();
+
+  if (error || !data) {
+    console.error(`Error fetching chapter details ${id}:`, error);
+    return null;
+  }
+  return data as DbChapter;
+}
+
 export async function POST(request: Request) {
   // const cookieStore = cookies(); // No longer need to get it here
   const supabase = createSupabaseServerClient(); // Call without arguments
@@ -67,18 +80,15 @@ export async function POST(request: Request) {
     const {
         // Standalone generation fields
         synopsis,
-        styleNote, // Keep styleNote for both modes
-
-        // Story-centric generation fields
+        styleNote, 
         storyId,
+        chapterId,
         partInstructions,
         globalSynopsis, // Read-only context, may not be needed directly in prompt if history is good
         globalStyleNote, // Use this if available, otherwise use styleNote
         previousPartContent, // Direct context from the last part
         storyTargetLength, // New: Target length for the whole story
-        currentStoryLength, // New: Current cumulative length
-
-        // Common fields
+        currentStoryLength, 
         length, // Length requested for *this* part
         useWebSearch,
         parentId,
@@ -95,8 +105,37 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'Valid length is required' }, { status: 400 });
     }
 
+    let isBookMode = false; // Flag to check if we are in book mode
+    let chapterDetails: DbChapter | null = null;
+
     // Mode-specific validation
     if (storyId) {
+      // Need to know the story's structure type
+       const { data: storyData, error: storyFetchError } = await supabase
+          .from('stories')
+          .select('structure_type')
+          .eq('id', storyId)
+          .maybeSingle(); // Use maybeSingle as RLS might deny access
+
+       if (storyFetchError || !storyData) {
+           console.error(`Generate: Error fetching story ${storyId} structure or access denied:`, storyFetchError);
+            return NextResponse.json({ error: 'Failed to verify story structure or access denied' }, { status: 403 }); // Or 404
+       }
+       isBookMode = storyData.structure_type === 'book';
+
+      if (isBookMode) {
+          // Book mode requires a chapterId unless refining
+          if (!chapterId && !parentId) {
+               return NextResponse.json({ error: 'Missing chapterId for new book part generation' }, { status: 400 });
+          }
+          // Fetch chapter details if chapterId is provided
+          if (chapterId) {
+              chapterDetails = await fetchChapterDetails(chapterId, supabase);
+              if (!chapterDetails) {
+                   return NextResponse.json({ error: `Chapter ${chapterId} not found or access denied` }, { status: 404 });
+              }
+          }
+      }
         // Story mode: partInstructions are key, styleNote can be fallback
         if (!partInstructions && !refinementFeedback) { // Need instructions unless refining
              return NextResponse.json({ error: 'Missing partInstructions for new story part' }, { status: 400 });
@@ -146,22 +185,41 @@ export async function POST(request: Request) {
         basePromptForDb = refinementFeedback; // The feedback is the core instruction
         currentPromptText = `Refine the previous story segment based on the following feedback. Maintain the established style (Style Note: ${effectiveStyleNote}) and aim for a length of approximately ${length} words. Incorporate web search results if relevant and helpful.\n\nFeedback:\n${refinementFeedback}\n\nRefined Story Segment:`;
 
-    } else if (storyId) {
+      } else if (storyId && isBookMode) {
+        // --- Book Chapter Part Generation Logic ---
+        if (!partInstructions) { /* ... */ }
+        if (!chapterDetails) {
+             // Should have been caught earlier, but safety check
+             return NextResponse.json({ error: 'Chapter details missing for book part generation.' }, { status: 500 });
+        }
+
+        if (previousPartContent) { historyContents.push({ role: "model", parts: [{ text: previousPartContent }] }); }
+
+        basePromptForDb = partInstructions;
+        let initialContext = '';
+         if (!previousPartContent) { // First part of *this chapter*
+            initialContext = `You are writing Chapter ${chapterDetails.chapter_number}${chapterDetails.title ? ` ("${chapterDetails.title}")` : ''}. `;
+            if (chapterDetails.synopsis) {
+                initialContext += `Chapter Synopsis: ${chapterDetails.synopsis}. `;
+            }
+            if (globalSynopsis) {
+                 initialContext += `Overall Story Synopsis: ${globalSynopsis}. `;
+            }
+            initialContext += '\n\n';
+         }
+
+        let lengthGuidance = '';
+        if (typeof storyTargetLength === 'number' && storyTargetLength > 0) { /* ... add length guidance ... */ }
+
+        currentPromptText = `${initialContext}${lengthGuidance}Continue the story within the current chapter based on the previous part (if provided). Write the next section according to these instructions, keeping the style consistent (Style Note: ${effectiveStyleNote}). Aim for this part to be approximately ${length} words long. Incorporate web search results if relevant.\n\nInstructions for this part:\n${partInstructions}\n\nNext Story Section (within Chapter ${chapterDetails.chapter_number}):`;
+
+      } else if (storyId) {
         // Story Part Generation Logic
         if (!partInstructions) {
              return NextResponse.json({ error: 'Missing partInstructions for new story part' }, { status: 400 });
         }
 
-        if (previousPartContent) {
-            // Add the previous part as model context if it exists
-            historyContents.push({ role: "model", parts: [{ text: previousPartContent }] });
-        } else {
-            // This is the first part of the story. Use global synopsis/style as initial context if available.
-             if (globalSynopsis) {
-                // Maybe add a system message or user message with the global context?
-                // Let's add it to the main prompt for simplicity now.
-             }
-        }
+        if (previousPartContent) { historyContents.push({ role: "model", parts: [{ text: previousPartContent }] }); }
 
         basePromptForDb = partInstructions; // The instructions are the core prompt
         let initialContext = '';
@@ -169,16 +227,14 @@ export async function POST(request: Request) {
             initialContext = `You are writing a story. Overall Synopsis: ${globalSynopsis}\n\n`;
         }
 
-        // --- Add length context ---
         let lengthGuidance = '';
         if (typeof storyTargetLength === 'number' && storyTargetLength > 0) {
             const currentLen = typeof currentStoryLength === 'number' ? currentStoryLength : 0;
-            lengthGuidance = `The target total length for the story is approximately ${storyTargetLength.toLocaleString()} words. So far, ~${currentLen.toLocaleString()} words have been written. `;
-            // Could add more sophisticated logic, e.g., "You are about X% done."
+            const percentage = Math.round((currentLen / storyTargetLength) * 100);
+            lengthGuidance += `You are about ${percentage}% of the way through the story.`;
         }
-        // --- End length context ---
 
-        currentPromptText = `${initialContext}${lengthGuidance}Continue the story based on the previous part (if provided). Write the next part according to these instructions, keeping the style consistent (Style Note: ${effectiveStyleNote}). Aim for this part to be approximately ${length} words long. Incorporate web search results if relevant and helpful.\n\nInstructions for this part:\n${partInstructions}\n\nNext Story Part:`;
+        currentPromptText = `${initialContext}${lengthGuidance}Continue the story based on the previous part (if provided). Write the next part according to these instructions, keeping the style consistent. Style Note: ${effectiveStyleNote}. Aim for this part to be approximately ${length} words long. Incorporate web search results if relevant and helpful.\n\nInstructions for this part:\n${partInstructions}\n\nNext Story Part:`;
 
     } else {
       // Standalone Initial Generation Logic

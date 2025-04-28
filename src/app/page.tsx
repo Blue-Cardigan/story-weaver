@@ -15,6 +15,7 @@ import { v4 as uuidv4 } from 'uuid';
 // Define Story type based on DB schema
 type Story = Database['public']['Tables']['stories']['Row'];
 type StoryGeneration = Database['public']['Tables']['story_generations']['Row'];
+type DbChapter = Database['public']['Tables']['chapters']['Row'];
 
 interface EditProposal {
   type: 'replace' | 'insert' | 'delete' | 'clarification' | 'none';
@@ -39,6 +40,15 @@ export default function Home() {
   const [currentStoryParts, setCurrentStoryParts] = useState<StoryGeneration[]>([]);
   const [isLoadingStoryParts, setIsLoadingStoryParts] = useState(false);
   const [storyPartsError, setStoryPartsError] = useState<string | null>(null);
+  const [fetchedChapters, setFetchedChapters] = useState<DbChapter[]>([]);
+  const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null);
+  const [isLoadingChapters, setIsLoadingChapters] = useState(false);
+  const [chaptersError, setChaptersError] = useState<string | null>(null);
+  const [isAddingChapter, setIsAddingChapter] = useState(false);
+  const [addChapterError, setAddChapterError] = useState<string | null>(null);
+  const [newChapterNumber, setNewChapterNumber] = useState<number | ''>('');
+  const [newChapterTitle, setNewChapterTitle] = useState('');
+  const [newChapterSynopsis, setNewChapterSynopsis] = useState('');
   const [synopsis, setSynopsis] = useState('');
   const [styleNote, setStyleNote] = useState('');
   const [partInstructions, setPartInstructions] = useState('');
@@ -178,18 +188,52 @@ export default function Home() {
     }
   }, [effectiveIdentifier, user, anonUserIdentifier]);
 
+  const fetchChapters = useCallback(async (storyId: string) => {
+    if (!effectiveIdentifier) return;
+    setIsLoadingChapters(true);
+    setChaptersError(null);
+    setFetchedChapters([]);
+    setSelectedChapterId(null);
+    const headers: HeadersInit = {};
+    const url = `/api/stories/${storyId}/chapters`;
+    if (!user && anonUserIdentifier) {
+        headers['X-User-Identifier'] = anonUserIdentifier;
+    }
+    try {
+        const response = await fetch(url, { headers });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Failed to fetch chapters');
+        }
+        setFetchedChapters(data as DbChapter[]);
+    } catch (err) {
+        console.error("Failed to fetch chapters:", err);
+        setChaptersError(err instanceof Error ? err.message : 'Could not load chapters.');
+    } finally {
+        setIsLoadingChapters(false);
+    }
+  }, [effectiveIdentifier, user, anonUserIdentifier]);
+
   useEffect(() => {
     if (activeStoryId && effectiveIdentifier) {
-      fetchStoryDetails(activeStoryId);
-      fetchStoryParts(activeStoryId);
-      setGeneratedStory(null);
-      setCurrentGenerationId(null);
-      setError(null);
-      setAcceptStatus(null);
-      setRefinementFeedback('');
-      setDiffForEditor(null);
-      setDiffStartIndex(null);
-      setDiffEndIndex(null);
+      const loadData = async () => {
+        setGeneratedStory(null);
+        setCurrentGenerationId(null);
+        setError(null);
+        setAcceptStatus(null);
+        setRefinementFeedback('');
+        setDiffForEditor(null);
+        setDiffStartIndex(null);
+        setDiffEndIndex(null);
+        setFetchedChapters([]);
+        setSelectedChapterId(null);
+        setIsLoadingChapters(false);
+        setChaptersError(null);
+
+        await fetchStoryDetails(activeStoryId);
+        await fetchStoryParts(activeStoryId);
+      };
+      loadData();
     } else {
       setActiveStoryDetails(null);
       setCurrentStoryParts([]);
@@ -200,20 +244,22 @@ export default function Home() {
       setPartInstructions('');
       setLength(500);
       setUseWebSearch(false);
+      setFetchedChapters([]);
+      setSelectedChapterId(null);
+      setIsLoadingChapters(false);
+      setChaptersError(null);
     }
   }, [activeStoryId, effectiveIdentifier]);
 
+  useEffect(() => {
+    if (activeStoryDetails?.id && activeStoryDetails.structure_type === 'book') {
+      fetchChapters(activeStoryDetails.id);
+    }
+  }, [activeStoryDetails, fetchChapters]);
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    
-    if (authLoading) {
-        setError('Authentication status is loading. Please wait.');
-        return;
-    }
-    if (!effectiveIdentifier) {
-        setError('Could not determine user or anonymous identifier. Please refresh.');
-        return;
-    }
+    if (authLoading || !effectiveIdentifier || isLoading) return;
 
     setIsLoading(true);
     setError(null);
@@ -231,6 +277,16 @@ export default function Home() {
         setError('Please fill in Synopsis and Style Note.');
         setIsLoading(false);
         return;
+    }
+    const isBookMode = activeStoryDetails?.structure_type === 'book';
+    if (activeStoryId && isBookMode && !selectedChapterId && currentStoryParts.filter(p => p.chapter_id).length === 0) {
+        setError('Please select or add a chapter before generating the first part.');
+        setIsLoading(false);
+        return;
+    } else if (activeStoryId && isBookMode && !selectedChapterId) {
+         setError('Please select a chapter for the next part.');
+         setIsLoading(false);
+         return;
     }
     if (activeStoryId && !partInstructions.trim() && currentStoryParts.length === 0) {
         setError('Please provide instructions for the next part.');
@@ -253,16 +309,26 @@ export default function Home() {
         payload.partInstructions = partInstructions;
         payload.globalSynopsis = activeStoryDetails.global_synopsis;
         payload.globalStyleNote = activeStoryDetails.global_style_note;
+        payload.storyTargetLength = activeStoryDetails.target_length;
+
+        let lastPart: StoryGeneration | null = null;
+        if (isBookMode && selectedChapterId) {
+            lastPart = [...currentStoryParts]
+                        .filter(p => p.chapter_id === selectedChapterId)
+                        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0] || null;
+        } else {
+            lastPart = currentStoryParts.length > 0 ? currentStoryParts[currentStoryParts.length - 1] : null;
+        }
 
         const currentLength = currentStoryParts.reduce((sum, part) => {
             return sum + (part.generated_story?.split(/\s+/).filter(Boolean).length || 0);
         }, 0);
 
         payload.currentStoryLength = currentLength;
-        payload.storyTargetLength = activeStoryDetails.target_length;
-
-        const lastPart = currentStoryParts.length > 0 ? currentStoryParts[currentStoryParts.length - 1] : null;
         payload.previousPartContent = lastPart?.generated_story ?? null;
+        if (isBookMode && selectedChapterId) {
+             payload.chapterId = selectedChapterId;
+        }
     } else {
         payload.synopsis = synopsis;
         payload.styleNote = styleNote;
@@ -574,6 +640,71 @@ export default function Home() {
     }
   };
 
+  const handleAddChapter = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!activeStoryId || !newChapterNumber || isAddingChapter) return;
+
+    setIsAddingChapter(true);
+    setAddChapterError(null);
+
+    const payload = {
+        chapter_number: newChapterNumber,
+        title: newChapterTitle.trim() || null,
+        synopsis: newChapterSynopsis.trim() || null,
+    };
+
+    try {
+        const response = await fetch(`/api/stories/${activeStoryId}/chapters`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-User-Identifier': effectiveIdentifier || '' },
+            body: JSON.stringify(payload),
+        });
+        const result = await response.json();
+        if (!response.ok) { throw new Error(result.error || `Failed to add chapter (status ${response.status})`); }
+
+        setNewChapterNumber('');
+        setNewChapterTitle('');
+        setNewChapterSynopsis('');
+        await fetchChapters(activeStoryId);
+        setSelectedChapterId(result.id);
+
+    } catch (err) {
+        console.error("Failed to add chapter:", err);
+        setAddChapterError(err instanceof Error ? err.message : "An unknown error occurred.");
+    } finally {
+        setIsAddingChapter(false);
+    }
+  };
+
+  const groupedStoryParts = useMemo(() => {
+    if (!activeStoryDetails || currentStoryParts.length === 0) return {};
+
+    const groups: Record<string, StoryGeneration[]> = {};
+    const chapterMap = new Map(fetchedChapters.map(ch => [ch.id, ch]));
+
+    currentStoryParts.forEach(part => {
+      const chapterId = part.chapter_id || 'uncategorized';
+      if (!groups[chapterId]) {
+        groups[chapterId] = [];
+      }
+      groups[chapterId].push(part);
+    });
+
+    fetchedChapters.forEach(ch => {
+        if (!groups[ch.id]) {
+            groups[ch.id] = [];
+        }
+    });
+
+    const sortedGroupKeys = [
+        ...fetchedChapters.map(ch => ch.id),
+        ...(groups['uncategorized'] ? ['uncategorized'] : [])
+    ];
+
+    return { groups, chapterMap, sortedGroupKeys };
+
+  }, [currentStoryParts, fetchedChapters, activeStoryDetails]);
+
   return (
     <main className={`flex min-h-screen flex-col justify-start p-12 md:p-24 bg-gradient-to-br from-gray-50 via-stone-50 to-slate-100 text-gray-800 font-sans transition-all duration-300`}>
        <div className={`fixed top-0 left-0 right-0 z-20 flex items-center justify-between p-4 md:p-6 transition-all duration-300 ${!isChatCollapsed ? 'pr-[22rem]' : 'pr-4'} bg-gradient-to-b from-white/80 via-white/50 to-transparent`}>
@@ -641,14 +772,72 @@ export default function Home() {
                         )}
                     </div>
 
+                    {activeStoryDetails.structure_type === 'book' && (
+                        <div className="space-y-4 p-4 bg-blue-50/40 rounded-lg border border-blue-200/60">
+                            <h3 className="text-lg font-semibold text-blue-800">Chapters</h3>
+                            {isLoadingChapters && <p className="text-slate-500 text-sm">Loading chapters...</p>}
+                            {chaptersError && <p className="text-red-600 text-sm">Error loading chapters: {chaptersError}</p>}
+                            {!isLoadingChapters && !chaptersError && (
+                                <div className="space-y-3">
+                                    <div>
+                                        <label htmlFor="chapterSelect" className="block text-sm font-medium text-gray-700 mb-1">Select Chapter</label>
+                                        <select
+                                            id="chapterSelect"
+                                            value={selectedChapterId || ''}
+                                            onChange={(e) => setSelectedChapterId(e.target.value || null)}
+                                            className="w-full p-2 border border-gray-300/70 rounded-md shadow-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white/90 disabled:bg-gray-100"
+                                            disabled={isAddingChapter || isLoading}
+                                        >
+                                            <option value="">-- Select a Chapter --</option>
+                                            {fetchedChapters.map(ch => (
+                                                <option key={ch.id} value={ch.id}>
+                                                    Ch. {ch.chapter_number}{ch.title ? `: ${ch.title}` : ''}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    <details className="group">
+                                        <summary className="cursor-pointer text-sm font-medium text-blue-600 hover:text-blue-800 list-none inline-flex items-center">
+                                             <span className="group-open:hidden">+ Add New Chapter</span>
+                                             <span className="hidden group-open:inline">▼ Add New Chapter</span>
+                                        </summary>
+                                        <form onSubmit={handleAddChapter} className="mt-3 space-y-3 p-3 bg-white/60 rounded border border-blue-200/80">
+                                             <div>
+                                                <label htmlFor="newChapterNumber" className="block text-xs font-medium text-gray-600 mb-0.5">Chapter Number*</label>
+                                                <input type="number" id="newChapterNumber" value={newChapterNumber} onChange={e => setNewChapterNumber(e.target.value === '' ? '' : parseInt(e.target.value))} required min="1" className="w-full p-1.5 text-sm border border-gray-300/70 rounded-md" placeholder={`Next: ${(fetchedChapters[fetchedChapters.length - 1]?.chapter_number || 0) + 1}`} />
+                                             </div>
+                                              <div>
+                                                <label htmlFor="newChapterTitle" className="block text-xs font-medium text-gray-600 mb-0.5">Title (Optional)</label>
+                                                <input type="text" id="newChapterTitle" value={newChapterTitle} onChange={e => setNewChapterTitle(e.target.value)} className="w-full p-1.5 text-sm border border-gray-300/70 rounded-md" />
+                                             </div>
+                                             <div>
+                                                <label htmlFor="newChapterSynopsis" className="block text-xs font-medium text-gray-600 mb-0.5">Synopsis (Optional)</label>
+                                                <textarea id="newChapterSynopsis" value={newChapterSynopsis} onChange={e => setNewChapterSynopsis(e.target.value)} rows={2} className="w-full p-1.5 text-sm border border-gray-300/70 rounded-md"></textarea>
+                                             </div>
+                                             {addChapterError && <p className="text-xs text-red-600">{addChapterError}</p>}
+                                             <div className="flex justify-end">
+                                                <button type="submit" disabled={isAddingChapter || !newChapterNumber} className="py-1 px-3 text-xs border rounded bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-50">
+                                                    {isAddingChapter ? 'Adding...' : 'Add Chapter'}
+                                                </button>
+                                             </div>
+                                        </form>
+                                    </details>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                      <div>
-                        <label htmlFor="partInstructions" className="block text-sm font-medium text-gray-700 mb-1">Instructions for Next Part</label>
+                        <label htmlFor="partInstructions" className="block text-sm font-medium text-gray-700 mb-1">
+                            Instructions for Next Part {selectedChapterId && fetchedChapters.find(c => c.id === selectedChapterId) ? `(Chapter ${fetchedChapters.find(c => c.id === selectedChapterId)?.chapter_number})` : ''}
+                        </label>
                         <textarea
                           id="partInstructions"
                           name="partInstructions"
                           rows={4}
                           className="w-full p-3 border border-gray-300/70 rounded-lg shadow-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500 bg-white/80 placeholder-gray-400 transition duration-150 ease-in-out"
-                          placeholder="Describe what should happen in this section, characters involved, key events, tone shifts..."
+                          placeholder="Describe what should happen in this section..."
                           value={partInstructions}
                           onChange={(e) => setPartInstructions(e.target.value)}
                           required
@@ -717,8 +906,14 @@ export default function Home() {
 
                 <button
                   type="submit"
-                  disabled={isLoading || isAccepting || isRefining || isLoadingStoryDetails}
-                  className={`inline-flex justify-center py-2 px-6 border border-transparent shadow-sm text-sm font-medium rounded-md text-white transition duration-150 ease-in-out ${(isLoading || isAccepting || isRefining || isLoadingStoryDetails) ? 'bg-gray-400 cursor-not-allowed' : 'bg-gradient-to-r from-slate-600 to-gray-800 hover:from-slate-700 hover:to-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500'}`}
+                  disabled={isLoading || isAccepting || isRefining || isLoadingStoryDetails || isLoadingChapters ||
+                      (activeStoryDetails?.structure_type === 'book' && !selectedChapterId && currentStoryParts.some(p => p.chapter_id))}
+                  className={`inline-flex justify-center py-2 px-6 border border-transparent shadow-sm text-sm font-medium rounded-md text-white transition duration-150 ease-in-out ${
+                      (isLoading || isAccepting || isRefining || isLoadingStoryDetails || isLoadingChapters || (activeStoryDetails?.structure_type === 'book' && !selectedChapterId && currentStoryParts.some(p => p.chapter_id)))
+                      ? 'bg-gray-400 cursor-not-allowed'
+                      : 'bg-gradient-to-r from-slate-600 to-gray-800 hover:from-slate-700 hover:to-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500'
+                  }`}
+                  title={ (activeStoryDetails?.structure_type === 'book' && !selectedChapterId && currentStoryParts.some(p => p.chapter_id)) ? 'Please select a chapter' : ''}
                 >
                   {isLoading ? (
                     <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"> <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle> <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path> </svg>
@@ -802,7 +997,7 @@ export default function Home() {
       {activeStoryId && !isLoadingStoryDetails && activeStoryDetails && (
         <div className={`w-full max-w-3xl bg-white/60 backdrop-blur-md rounded-xl shadow-lg p-8 border border-gray-200/40 transition-all duration-300 ${!isChatCollapsed ? 'mr-[22rem]' : 'mr-0'} mb-8`}>
            <h2 className="text-xl font-semibold text-slate-700 mb-4 border-b pb-2">
-             Story Parts: {activeStoryDetails.title}
+             Story Content: {activeStoryDetails.title}
            </h2>
 
            {isLoadingStoryParts && <p className="text-slate-500 text-center py-4">Loading story parts...</p>}
@@ -812,53 +1007,70 @@ export default function Home() {
               </div>
            )}
 
-           {!isLoadingStoryParts && !storyPartsError && currentStoryParts.length === 0 && (
+           {isLoadingChapters && activeStoryDetails.structure_type === 'book' && <p className="text-slate-500 text-center py-4">Loading chapter index...</p>}
+
+           {!isLoadingStoryParts && !storyPartsError && currentStoryParts.length === 0 && !isLoadingChapters && (
               <p className="text-slate-500 text-center py-4 italic">This story doesn't have any parts yet. Generate the first one above!</p>
            )}
 
-           {!isLoadingStoryParts && !storyPartsError && currentStoryParts.length > 0 && (
-              <div className="space-y-6 max-h-[60vh] overflow-y-auto pr-2 border rounded-lg p-4 bg-slate-50/30">
-                  {currentStoryParts.map((part, index) => {
-                      const partSavingState = storyPartsSavingStates[part.id] || { isLoading: false, error: null, success: false };
+           {!isLoadingStoryParts && !storyPartsError && !isLoadingChapters && currentStoryParts.length > 0 && (
+              <div className="space-y-8 max-h-[70vh] overflow-y-auto pr-2 ">
+                 {groupedStoryParts.sortedGroupKeys?.map((chapterKey) => {
+                      const chapter = groupedStoryParts.chapterMap?.get(chapterKey);
+                      const partsInGroup = groupedStoryParts.groups?.[chapterKey] || [];
+
+                      if (partsInGroup.length === 0 && chapterKey !== 'uncategorized') return null;
+
                       return (
-                        <div key={part.id} className={`p-4 rounded-lg border transition-shadow duration-150 ${part.is_accepted ? 'bg-green-50/70 border-green-200 shadow-sm' : 'bg-white/80 border-gray-200/80'}`}>
-                            <div className="flex justify-between items-center mb-2">
-                                <p className="text-sm font-medium text-gray-800">
-                                    Part {index + 1}
-                                    {part.is_accepted && <span className="ml-2 text-xs font-semibold text-green-700 py-0.5 px-1.5 rounded bg-green-100 border border-green-200">[Latest Accepted]</span>}
-                                </p>
-                                <p className="text-xs text-gray-500">
-                                    ID: {part.id?.substring(0, 8)}...
-                                </p>
-                            </div>
-                            {part.iteration_feedback && (
-                              <p className="text-xs text-gray-600 mb-1 italic border-l-2 border-slate-300 pl-2">
-                                  <span className="font-semibold">Refinement Feedback:</span> {part.iteration_feedback.substring(0,150)}{part.iteration_feedback.length > 150 ? '...' : ''}
-                              </p>
-                             )}
-                            <EditableText
-                                value={part.generated_story || ''}
-                                onChange={(newContent) => handleStoryPartChange(part.id, newContent)}
-                                placeholder="Edit story content..."
-                                className="bg-white/90 rounded-md border border-gray-300/50 focus-within:ring-1 focus-within:ring-slate-400 focus-within:border-slate-400"
-                            />
-                            <div className="mt-2 flex justify-end items-center space-x-3">
-                                {partSavingState.error && (
-                                    <span className="text-xs text-red-600">Error: {partSavingState.error}</span>
-                                )}
-                                {partSavingState.success && (
-                                    <span className="text-xs text-green-600">Saved!</span>
-                                )}
-                                <button
-                                    onClick={() => handleSaveChangesForPart(part.id)}
-                                    disabled={partSavingState.isLoading}
-                                    className={`py-1 px-3 text-xs border rounded transition duration-150 ease-in-out ${partSavingState.isLoading ? 'bg-gray-200 text-gray-500 cursor-wait' : 'border-slate-400 text-slate-600 hover:bg-slate-100 focus:outline-none focus:ring-1 focus:ring-offset-1 focus:ring-slate-400 disabled:opacity-50'}`}
-                                >
-                                    {partSavingState.isLoading ? 'Saving...' : 'Save Changes'}
-                                </button>
-                            </div>
-                        </div>
-                    )})}
+                        <section key={chapterKey} className="space-y-4">
+                           {chapter && (
+                              <h3 className="text-lg font-semibold text-blue-700 border-b border-blue-200 pb-1 sticky top-0 bg-white/80 backdrop-blur-sm py-1 -mx-4 px-4 z-10">
+                                  Chapter {chapter.chapter_number}{chapter.title ? `: ${chapter.title}` : ''}
+                              </h3>
+                           )}
+                           {chapterKey === 'uncategorized' && partsInGroup.length > 0 && (
+                               <h3 className="text-lg font-semibold text-gray-600 border-b border-gray-200 pb-1 sticky top-0 bg-white/80 backdrop-blur-sm py-1 -mx-4 px-4 z-10">
+                                   Uncategorized Parts
+                               </h3>
+                           )}
+
+                           {partsInGroup.map((part, index) => {
+                                const partSavingState = storyPartsSavingStates[part.id] || { isLoading: false, error: null, success: false };
+                                return (
+                                    <div key={part.id} className={`ml-${chapter ? 4 : 0} p-4 rounded-lg border transition-shadow duration-150 ${part.is_accepted ? 'bg-green-50/70 border-green-200 shadow-sm' : 'bg-white/80 border-gray-200/80'}`}>
+                                        <div className="flex justify-between items-center mb-2">
+                                             <p className="text-sm font-medium text-gray-800">
+                                                 {part.is_accepted && <span className="ml-1 text-xs font-semibold text-green-700 py-0.5 px-1.5 rounded bg-green-100 border border-green-200">[Latest Accepted]</span>}
+                                             </p>
+                                             <p className="text-xs text-gray-500">ID: {part.id?.substring(0, 8)}...</p>
+                                         </div>
+                                        <EditableText
+                                            value={part.generated_story || ''}
+                                            onChange={(newContent) => handleStoryPartChange(part.id, newContent)}
+                                            placeholder="Edit story content..."
+                                            className="bg-white/90 rounded-md border border-gray-300/50 focus-within:ring-1 focus-within:ring-slate-400 focus-within:border-slate-400 mb-2"
+                                        />
+                                        <div className="mt-2 flex justify-end items-center space-x-3">
+                                            {partSavingState.error && (
+                                                <span className="text-xs text-red-600">Error: {partSavingState.error}</span>
+                                            )}
+                                            {partSavingState.success && (
+                                                <span className="text-xs text-green-600">Saved!</span>
+                                            )}
+                                            <button
+                                                onClick={() => handleSaveChangesForPart(part.id)}
+                                                disabled={partSavingState.isLoading}
+                                                className={`py-1 px-3 text-xs border rounded transition duration-150 ease-in-out ${partSavingState.isLoading ? 'bg-gray-200 text-gray-500 cursor-wait' : 'border-slate-400 text-slate-600 hover:bg-slate-100 focus:outline-none focus:ring-1 focus:ring-offset-1 focus:ring-slate-400 disabled:opacity-50'}`}
+                                            >
+                                                {partSavingState.isLoading ? 'Saving...' : 'Save Changes'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                )
+                            })}
+                        </section>
+                      )
+                 })}
               </div>
            )}
         </div>

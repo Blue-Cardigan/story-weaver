@@ -9,6 +9,50 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
+      chapters: {
+        Row: {
+          chapter_number: number
+          created_at: string
+          id: string
+          story_id: string
+          synopsis: string | null
+          title: string | null
+          updated_at: string
+          user_id: string | null
+          user_identifier: string | null
+        }
+        Insert: {
+          chapter_number: number
+          created_at?: string
+          id?: string
+          story_id: string
+          synopsis?: string | null
+          title?: string | null
+          updated_at?: string
+          user_id?: string | null
+          user_identifier?: string | null
+        }
+        Update: {
+          chapter_number?: number
+          created_at?: string
+          id?: string
+          story_id?: string
+          synopsis?: string | null
+          title?: string | null
+          updated_at?: string
+          user_id?: string | null
+          user_identifier?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "chapters_story_id_fkey"
+            columns: ["story_id"]
+            isOneToOne: false
+            referencedRelation: "stories"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       comments: {
         Row: {
           comment_text: string
@@ -131,6 +175,7 @@ export type Database = {
       }
       story_generations: {
         Row: {
+          chapter_id: string | null
           chapter_number: number | null
           context_current_length: number | null
           context_target_length: number | null
@@ -154,6 +199,7 @@ export type Database = {
           user_identifier: string | null
         }
         Insert: {
+          chapter_id?: string | null
           chapter_number?: number | null
           context_current_length?: number | null
           context_target_length?: number | null
@@ -177,6 +223,7 @@ export type Database = {
           user_identifier?: string | null
         }
         Update: {
+          chapter_id?: string | null
           chapter_number?: number | null
           context_current_length?: number | null
           context_target_length?: number | null
@@ -200,6 +247,13 @@ export type Database = {
           user_identifier?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "story_generations_chapter_id_fkey"
+            columns: ["chapter_id"]
+            isOneToOne: false
+            referencedRelation: "chapters"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "story_generations_parent_generation_id_fkey"
             columns: ["parent_generation_id"]
