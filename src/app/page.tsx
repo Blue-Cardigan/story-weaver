@@ -253,6 +253,14 @@ export default function Home() {
         payload.partInstructions = partInstructions;
         payload.globalSynopsis = activeStoryDetails.global_synopsis;
         payload.globalStyleNote = activeStoryDetails.global_style_note;
+
+        const currentLength = currentStoryParts.reduce((sum, part) => {
+            return sum + (part.generated_story?.split(/\s+/).filter(Boolean).length || 0);
+        }, 0);
+
+        payload.currentStoryLength = currentLength;
+        payload.storyTargetLength = activeStoryDetails.target_length;
+
         const lastPart = currentStoryParts.length > 0 ? currentStoryParts[currentStoryParts.length - 1] : null;
         payload.previousPartContent = lastPart?.generated_story ?? null;
     } else {

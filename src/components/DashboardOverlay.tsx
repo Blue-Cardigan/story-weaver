@@ -138,7 +138,8 @@ export default function DashboardOverlay({
       title: string; 
       structure_type: StoryStructure; 
       global_synopsis?: string; 
-      global_style_note?: string 
+      global_style_note?: string;
+      target_length?: number;
   }) => {
     if (!effectiveIdentifier) {
         setCreateStoryError("Cannot create story: User identifier is missing.");
@@ -243,9 +244,14 @@ export default function DashboardOverlay({
                           <div key={story.id} className="bg-white/80 p-4 rounded-lg border border-slate-200/80 shadow-sm hover:shadow-md transition-shadow duration-150 flex flex-col">
                               <div className="flex-grow">
                                   <h3 className="text-md font-semibold text-slate-700 truncate mb-1" title={story.title}>{story.title}</h3>
-                                  <p className="text-xs text-slate-500 mb-2">
+                                  <p className="text-xs text-slate-500 mb-1">
                                       Type: <span className="capitalize font-medium">{story.structure_type?.replace('_', ' ') || 'N/A'}</span>
                                   </p>
+                                  {story.target_length && (
+                                     <p className="text-xs text-slate-500 mb-2">
+                                         Target Length: <span className="font-medium">~{story.target_length.toLocaleString()} words</span>
+                                     </p>
+                                  )}
                                   <p className="text-xs text-slate-500 mb-3">
                                       Last updated: {new Date(story.updated_at).toLocaleDateString()}
                                   </p>

@@ -97,6 +97,7 @@ export type Database = {
           global_synopsis: string | null
           id: string
           structure_type: Database["public"]["Enums"]["story_structure_type"]
+          target_length: number | null
           title: string
           updated_at: string
           user_id: string | null
@@ -108,6 +109,7 @@ export type Database = {
           global_synopsis?: string | null
           id?: string
           structure_type?: Database["public"]["Enums"]["story_structure_type"]
+          target_length?: number | null
           title: string
           updated_at?: string
           user_id?: string | null
@@ -119,6 +121,7 @@ export type Database = {
           global_synopsis?: string | null
           id?: string
           structure_type?: Database["public"]["Enums"]["story_structure_type"]
+          target_length?: number | null
           title?: string
           updated_at?: string
           user_id?: string | null
@@ -129,6 +132,8 @@ export type Database = {
       story_generations: {
         Row: {
           chapter_number: number | null
+          context_current_length: number | null
+          context_target_length: number | null
           created_at: string
           generated_story: string | null
           global_context_style: string | null
@@ -150,6 +155,8 @@ export type Database = {
         }
         Insert: {
           chapter_number?: number | null
+          context_current_length?: number | null
+          context_target_length?: number | null
           created_at?: string
           generated_story?: string | null
           global_context_style?: string | null
@@ -171,6 +178,8 @@ export type Database = {
         }
         Update: {
           chapter_number?: number | null
+          context_current_length?: number | null
+          context_target_length?: number | null
           created_at?: string
           generated_story?: string | null
           global_context_style?: string | null

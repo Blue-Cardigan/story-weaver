@@ -75,9 +75,11 @@ export async function POST(request: Request) {
         globalSynopsis, // Read-only context, may not be needed directly in prompt if history is good
         globalStyleNote, // Use this if available, otherwise use styleNote
         previousPartContent, // Direct context from the last part
+        storyTargetLength, // New: Target length for the whole story
+        currentStoryLength, // New: Current cumulative length
 
         // Common fields
-        length,
+        length, // Length requested for *this* part
         useWebSearch,
         parentId,
         refinementFeedback,
@@ -164,9 +166,19 @@ export async function POST(request: Request) {
         basePromptForDb = partInstructions; // The instructions are the core prompt
         let initialContext = '';
         if (!previousPartContent && globalSynopsis) {
-            initialContext = `You are writing a story. You should output only the story text for this part, without any other text or commentary. Here is the overall synopsis:\n${globalSynopsis}\n\n`;
+            initialContext = `You are writing a story. Overall Synopsis: ${globalSynopsis}\n\n`;
         }
-        currentPromptText = `${initialContext}Continue the story based on the previous part (if provided). Write the next part according to these instructions, keeping the style consistent and aiming for a length of approximately ${length} words. Style Note: ${effectiveStyleNote}\n Incorporate web search results if relevant and helpful.\n\nInstructions for this part:\n${partInstructions}\n\nNext Story Part:`;
+
+        // --- Add length context ---
+        let lengthGuidance = '';
+        if (typeof storyTargetLength === 'number' && storyTargetLength > 0) {
+            const currentLen = typeof currentStoryLength === 'number' ? currentStoryLength : 0;
+            lengthGuidance = `The target total length for the story is approximately ${storyTargetLength.toLocaleString()} words. So far, ~${currentLen.toLocaleString()} words have been written. `;
+            // Could add more sophisticated logic, e.g., "You are about X% done."
+        }
+        // --- End length context ---
+
+        currentPromptText = `${initialContext}${lengthGuidance}Continue the story based on the previous part (if provided). Write the next part according to these instructions, keeping the style consistent (Style Note: ${effectiveStyleNote}). Aim for this part to be approximately ${length} words long. Incorporate web search results if relevant and helpful.\n\nInstructions for this part:\n${partInstructions}\n\nNext Story Part:`;
 
     } else {
       // Standalone Initial Generation Logic
@@ -239,6 +251,9 @@ export async function POST(request: Request) {
       generated_story: generatedText,
       parent_generation_id: parentId,
       iteration_feedback: refinementFeedback, // Store refinement feedback if provided
+      // Save length context provided to the model
+      context_target_length: typeof storyTargetLength === 'number' ? storyTargetLength : null,
+      context_current_length: typeof currentStoryLength === 'number' ? currentStoryLength : null,
       // is_accepted will be set by the /api/accept endpoint
     };
 
