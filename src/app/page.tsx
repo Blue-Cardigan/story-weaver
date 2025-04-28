@@ -9,6 +9,8 @@ import Chat from '@/components/Chat';
 import AuthButton from '@/components/AuthButton';
 import AuthModal from '@/components/AuthModal';
 import DashboardOverlay from '@/components/DashboardOverlay';
+import EditChapterModal from '@/components/EditChapterModal';
+import type { ChapterUpdatePayload } from '@/components/EditChapterModal';
 import * as Diff from 'diff';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -70,6 +72,13 @@ export default function Home() {
   const [diffStartIndex, setDiffStartIndex] = useState<number | null>(null);
   const [diffEndIndex, setDiffEndIndex] = useState<number | null>(null);
   const [storyPartsSavingStates, setStoryPartsSavingStates] = useState<Record<string, { isLoading: boolean; error: string | null; success: boolean }>>({});
+
+  // --- State for Editing Chapters ---
+  const [isEditChapterModalOpen, setIsEditChapterModalOpen] = useState(false);
+  const [editingChapter, setEditingChapter] = useState<DbChapter | null>(null);
+  const [isUpdatingChapter, setIsUpdatingChapter] = useState(false);
+  const [updateChapterError, setUpdateChapterError] = useState<string | null>(null);
+  // --- End Chapter Edit State ---
 
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
 
@@ -642,8 +651,7 @@ export default function Home() {
     }
   };
 
-  const handleAddChapter = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const handleAddChapterClick = async () => {
     if (!activeStoryId || !newChapterNumber || isAddingChapter) return;
 
     setIsAddingChapter(true);
@@ -677,6 +685,59 @@ export default function Home() {
         setIsAddingChapter(false);
     }
   };
+
+  // --- Chapter Edit Modal Handlers ---
+  const handleOpenEditChapterModal = (chapter: DbChapter) => {
+    setEditingChapter(chapter);
+    setUpdateChapterError(null);
+    setIsEditChapterModalOpen(true);
+  };
+
+  const handleCloseEditChapterModal = () => {
+    setIsEditChapterModalOpen(false);
+    setUpdateChapterError(null);
+    setEditingChapter(null); // Clear editing chapter on close
+  };
+
+  const handleUpdateChapterSubmit = async (chapterId: string, formData: ChapterUpdatePayload) => {
+    if (!activeStoryId || !effectiveIdentifier) {
+        setUpdateChapterError("Cannot update chapter: Story or User identifier is missing.");
+        return;
+    }
+    setIsUpdatingChapter(true);
+    setUpdateChapterError(null);
+
+    const headers: HeadersInit = { 'Content-Type': 'application/json' };
+    const url = `/api/stories/${activeStoryId}/chapters/${chapterId}`; // Use specific chapter ID endpoint
+    if (!user && anonUserIdentifier) { headers['X-User-Identifier'] = anonUserIdentifier; }
+
+    try {
+        const response = await fetch(url, {
+            method: 'PATCH', // Use PATCH method
+            headers: headers,
+            body: JSON.stringify(formData),
+        });
+        const result = await response.json();
+        if (!response.ok) { throw new Error(result.error || `API request failed with status ${response.status}`); }
+
+        // Success
+        handleCloseEditChapterModal(); // Close modal on success
+        await fetchChapters(activeStoryId); // Refresh the chapter list
+
+        // Update selected chapter details if the currently selected one was edited
+        if (selectedChapterId === chapterId) {
+            setSelectedChapterId(chapterId); // Re-trigger useEffect or manually update if needed
+        }
+
+    } catch (err) {
+        console.error(`Page: Failed to update chapter ${chapterId}:`, err);
+        setUpdateChapterError(err instanceof Error ? err.message : 'An unknown error occurred during update.');
+        // Keep modal open on error
+    } finally {
+        setIsUpdatingChapter(false);
+    }
+  };
+  // --- End Chapter Edit Modal Handlers ---
 
   const groupedStoryParts = useMemo(() => {
     if (!activeStoryDetails || currentStoryParts.length === 0) return {};
@@ -723,7 +784,6 @@ export default function Home() {
                   className="text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 rounded py-1 px-2 hover:bg-slate-100/50"
                   aria-label="Manage your story dashboard"
                 >
-                  {/* Subtle Icon + Text */} 
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline -mt-0.5 mr-1 opacity-70" viewBox="0 0 20 20" fill="currentColor">
                       <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
                     </svg>
@@ -798,16 +858,34 @@ export default function Home() {
                                             ))}
                                         </select>
                                     </div>
+                                    {/* Add Edit Button for Selected Chapter */}
+                                    {selectedChapterId && (
+                                        <div className="mt-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    const chapterToEdit = fetchedChapters.find(ch => ch.id === selectedChapterId);
+                                                    if (chapterToEdit) {
+                                                        handleOpenEditChapterModal(chapterToEdit);
+                                                    }
+                                                }}
+                                                disabled={isUpdatingChapter || isLoading}
+                                                className="text-xs py-1 px-2 rounded border border-slate-400 hover:bg-slate-100 text-slate-700 transition disabled:opacity-50"
+                                            >
+                                                Edit Selected Chapter Info
+                                            </button>
+                                        </div>
+                                    )}
 
-                                    <details className="group">
+                                    <details className="group pt-2">
                                         <summary className="cursor-pointer text-sm font-medium text-blue-600 hover:text-blue-800 list-none inline-flex items-center">
                                              <span className="group-open:hidden">+ Add New Chapter</span>
                                              <span className="hidden group-open:inline">▼ Add New Chapter</span>
                                         </summary>
-                                        <form onSubmit={handleAddChapter} className="mt-3 space-y-3 p-3 bg-white/60 rounded border border-blue-200/80">
+                                        <div className="mt-3 space-y-3 p-3 bg-white/60 rounded border border-blue-200/80">
                                              <div>
                                                 <label htmlFor="newChapterNumber" className="block text-xs font-medium text-gray-600 mb-0.5">Chapter Number*</label>
-                                                <input type="number" id="newChapterNumber" value={newChapterNumber} onChange={e => setNewChapterNumber(e.target.value === '' ? '' : parseInt(e.target.value))} required min="1" className="w-full p-1.5 text-sm border border-gray-300/70 rounded-md" placeholder={`Next: ${(fetchedChapters[fetchedChapters.length - 1]?.chapter_number || 0) + 1}`} />
+                                                <input type="number" id="newChapterNumber" value={newChapterNumber} onChange={e => setNewChapterNumber(e.target.value === '' ? '' : parseInt(e.target.value))} min="1" className="w-full p-1.5 text-sm border border-gray-300/70 rounded-md" placeholder={`Next: ${(fetchedChapters[fetchedChapters.length - 1]?.chapter_number || 0) + 1}`} />
                                              </div>
                                               <div>
                                                 <label htmlFor="newChapterTitle" className="block text-xs font-medium text-gray-600 mb-0.5">Title (Optional)</label>
@@ -819,11 +897,11 @@ export default function Home() {
                                              </div>
                                              {addChapterError && <p className="text-xs text-red-600">{addChapterError}</p>}
                                              <div className="flex justify-end">
-                                                <button type="submit" disabled={isAddingChapter || !newChapterNumber} className="py-1 px-3 text-xs border rounded bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-50">
+                                                <button type="button" onClick={handleAddChapterClick} disabled={isAddingChapter || !newChapterNumber} className="py-1 px-3 text-xs border rounded bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-50">
                                                     {isAddingChapter ? 'Adding...' : 'Add Chapter'}
                                                 </button>
                                              </div>
-                                        </form>
+                                        </div>
                                     </details>
                                 </div>
                             )}
@@ -1051,8 +1129,10 @@ export default function Home() {
                       return (
                         <section key={chapterKey} className="space-y-4">
                            {chapter && (
-                              <h3 className="text-lg font-semibold text-blue-700 border-b border-blue-200 pb-1 sticky top-0 bg-white/80 backdrop-blur-sm py-1 -mx-4 px-4 z-10">
-                                  Chapter {chapter.chapter_number}{chapter.title ? `: ${chapter.title}` : ''}
+                              <h3 className="text-lg font-semibold text-blue-700 border-b border-blue-200 pb-1 sticky top-0 bg-white/80 backdrop-blur-sm py-1 -mx-4 px-4 z-10 flex justify-between items-center">
+                                  <span>
+                                    Chapter {chapter.chapter_number}{chapter.title ? `: ${chapter.title}` : ''}
+                                  </span>
                               </h3>
                            )}
                            {chapterKey === 'uncategorized' && partsInGroup.length > 0 && (
@@ -1123,6 +1203,16 @@ export default function Home() {
         setActiveStoryId={setActiveStoryId}
         setGlobalSynopsis={setGlobalSynopsis}
         setGlobalStyleNote={setGlobalStyleNote}
+      />
+
+      {/* Render the Edit Chapter Modal */}
+      <EditChapterModal 
+        isOpen={isEditChapterModalOpen}
+        onClose={handleCloseEditChapterModal}
+        chapter={editingChapter}
+        onSubmit={handleUpdateChapterSubmit}
+        isUpdating={isUpdatingChapter}
+        updateError={updateChapterError}
       />
     </main>
   );

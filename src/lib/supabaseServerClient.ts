@@ -5,7 +5,6 @@ import type { Database } from '@/types/supabase'; // Import from new types file
 // EXPORT a function to create a server client
 // This function should be called from server components/routes.
 export function createSupabaseServerClient() {
-  const cookieStore = cookies(); // Get the cookie store instance
 
   // Ensure environment variables are available on the server
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
