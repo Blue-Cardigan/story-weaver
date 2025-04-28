@@ -1,5 +1,4 @@
     // src/app/api/chapters/[chapterId]/route.ts (add GET handler)
-    // ... (keep PATCH handler from above) ...
     import { Database } from "@/types/supabase"; // Ensure Database type is imported
     import { NextRequest, NextResponse } from "next/server"; // Ensure imports
     import { createSupabaseServerClient } from "@/lib/supabaseServerClient"; // Ensure import

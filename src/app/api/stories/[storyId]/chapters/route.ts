@@ -5,7 +5,6 @@
 
     type NewChapterPayload = Database['public']['Tables']['chapters']['Insert'];
     type DbChapter = Database['public']['Tables']['chapters']['Row'];
-    type ChapterUpdatePayload = Partial<Database['public']['Tables']['chapters']['Update']>;
 
     export async function POST(
         request: NextRequest,

@@ -1,15 +1,15 @@
 import { createSupabaseServerClient } from '@/lib/supabaseServerClient';
 import { Database } from '@/types/supabase';
-import { NextResponse } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server';
 
 type Chapter = Database['public']['Tables']['chapters']['Row'];
 
 export async function PATCH(
-  request: Request,
-  { params }: { params: { storyId: string, chapterId: string } }
+  request: NextRequest,
+  context: any
 ) {
   const supabase = createSupabaseServerClient();
-  const { storyId, chapterId } = params;
+  const { storyId, chapterId } = context.params;
 
   if (!storyId || !chapterId) {
     return NextResponse.json({ error: 'Story ID and Chapter ID are required' }, { status: 400 });
