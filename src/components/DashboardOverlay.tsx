@@ -6,6 +6,8 @@ import { User } from '@supabase/supabase-js';
 import { useState, useEffect, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid'; // For anon ID
 import CreateStoryModal from './CreateStoryModal'; // Import the modal
+import EditStoryModal from './EditStoryModal'; // Import EditStoryModal
+import type { StoryUpdatePayload } from './EditStoryModal'; // Import payload type
 
 const ANON_USER_ID_KEY = 'storyWeaverAnonUserId'; // Reuse the key from page.tsx
 
@@ -17,13 +19,17 @@ interface DashboardOverlayProps {
   onClose: () => void;
   user: User | null;
   setActiveStoryId: (storyId: string | null) => void; // Prop to set active story in parent
+  setGlobalSynopsis: (synopsis: string | null) => void; // Prop to set global synopsis in parent
+  setGlobalStyleNote: (note: string | null) => void; // Prop to set global style note in parent
 }
 
 export default function DashboardOverlay({ 
     isOpen, 
     onClose, 
     user,
-    setActiveStoryId // Destructure the new prop
+    setActiveStoryId, // Destructure the new prop
+    setGlobalSynopsis, // Destructure the new prop
+    setGlobalStyleNote // Destructure the new prop
 }: DashboardOverlayProps) {
   const supabase = createSupabaseBrowserClient();
   const [loadingLogout, setLoadingLogout] = useState(false);
@@ -37,6 +43,13 @@ export default function DashboardOverlay({
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isCreatingStory, setIsCreatingStory] = useState(false);
   const [createStoryError, setCreateStoryError] = useState<string | null>(null);
+
+  // --- State for Editing ---
+  const [editingStory, setEditingStory] = useState<Story | null>(null); // Story being edited
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [isUpdatingStory, setIsUpdatingStory] = useState(false);
+  const [updateStoryError, setUpdateStoryError] = useState<string | null>(null);
+  // --- End Edit State ---
 
   // Get anonymous identifier on mount
   useEffect(() => {
@@ -103,6 +116,9 @@ export default function DashboardOverlay({
       // Close create modal if dashboard is closed
       setIsCreateModalOpen(false);
       setCreateStoryError(null);
+      setIsEditModalOpen(false);
+      setUpdateStoryError(null);
+      setEditingStory(null);
     }
   }, [isOpen, effectiveIdentifier, fetchStories]);
 
@@ -119,6 +135,9 @@ export default function DashboardOverlay({
       setLoadingStories(false);
       setIsCreateModalOpen(false); // Ensure modal is closed on logout
       setCreateStoryError(null);
+      setIsEditModalOpen(false);
+      setUpdateStoryError(null);
+      setEditingStory(null);
       onClose(); // Close overlay on successful logout
     }
     setLoadingLogout(false);
@@ -181,10 +200,57 @@ export default function DashboardOverlay({
     }
   };
 
+  // --- Edit Modal Handlers ---
+  const handleOpenEditModal = (story: Story) => {
+    setEditingStory(story);
+    setUpdateStoryError(null);
+    setIsEditModalOpen(true);
+  };
+  const handleCloseEditModal = () => {
+    setIsEditModalOpen(false);
+    setUpdateStoryError(null);
+    setEditingStory(null); // Clear editing story on close
+  };
+
+  const handleUpdateStorySubmit = async (storyId: string, formData: StoryUpdatePayload) => {
+    if (!effectiveIdentifier) {
+        setUpdateStoryError("Cannot update story: User identifier is missing.");
+        return;
+    }
+    setIsUpdatingStory(true);
+    setUpdateStoryError(null);
+
+    const headers: HeadersInit = { 'Content-Type': 'application/json' };
+    const url = `/api/stories/${storyId}`; // Use specific story ID endpoint
+    if (!user && anonUserIdentifier) { headers['X-User-Identifier'] = anonUserIdentifier; }
+
+    try {
+        const response = await fetch(url, {
+            method: 'PATCH', // Use PATCH method
+            headers: headers,
+            body: JSON.stringify(formData),
+        });
+        const result = await response.json();
+        if (!response.ok) { throw new Error(result.error || `API request failed with status ${response.status}`); }
+
+        // Success
+        handleCloseEditModal(); // Close modal on success
+        fetchStories(); // Refresh the story list
+
+    } catch (err) {
+        console.error(`Dashboard: Failed to update story ${storyId}:`, err);
+        setUpdateStoryError(err instanceof Error ? err.message : 'An unknown error occurred during update.');
+        // Keep modal open on error
+    } finally {
+        setIsUpdatingStory(false);
+    }
+  };
+
   const handleLoadStory = (story: Story) => {
     setActiveStoryId(story.id); // Set the active story ID in the parent (page.tsx)
-    // TODO: Potentially load global synopsis/style into page.tsx state?
-    // For now, just setting the ID and closing dashboard.
+    // Load global synopsis and style note into the parent's state
+    setGlobalSynopsis(story.global_synopsis ?? null);
+    setGlobalStyleNote(story.global_style_note ?? null);
     onClose(); // Close dashboard after loading
   }
 
@@ -200,7 +266,7 @@ export default function DashboardOverlay({
 
   return (
     <>
-      <div className="fixed inset-0 z-40 flex flex-col bg-gradient-to-br from-gray-50 via-stone-50 to-slate-100 text-gray-800 animate-fade-in p-6 sm:p-8 md:p-12">
+      <div className="fixed inset-0 z-60 flex flex-col bg-gradient-to-br from-gray-50 via-stone-50 to-slate-100 text-gray-800 animate-fade-in p-6 sm:p-8 md:p-12">
         {/* Header Area */}
         <div className="flex justify-between items-center mb-6 sm:mb-8">
           <div className="flex items-center space-x-3">
@@ -257,10 +323,14 @@ export default function DashboardOverlay({
                                   </p>
                               </div>
                               <div className="flex justify-end space-x-2 mt-auto pt-2">
-                                  {/* TODO: Implement Edit functionality */}
-                                  <button className="text-xs py-1 px-2 rounded border border-slate-300 hover:bg-slate-100 text-slate-600 transition disabled:opacity-50" disabled>Edit</button>
-                                  <button 
-                                    onClick={() => handleLoadStory(story)} // Call handler on click
+                                  <button
+                                      onClick={() => handleOpenEditModal(story)} // Open edit modal on click
+                                      className="text-xs py-1 px-2 rounded border border-slate-300 hover:bg-slate-100 text-slate-600 transition disabled:opacity-50"
+                                  >
+                                      Edit
+                                  </button>
+                                  <button
+                                    onClick={() => handleLoadStory(story)}
                                     className="text-xs py-1 px-2 rounded border border-blue-500 hover:bg-blue-50 text-blue-600 transition"
                                   >
                                       Load
@@ -283,12 +353,6 @@ export default function DashboardOverlay({
               >
                   + Start a New Story
               </button>
-          </section>
-
-          {/* Section: Global Settings (Placeholder) */}
-          <section>
-              <h2 className="text-lg font-semibold text-slate-600 mb-4 border-b pb-2">Global Settings</h2>
-              <p className="text-slate-500 text-sm italic">(Coming soon: View/Edit global synopsis, style notes, etc.)</p>
           </section>
 
         </div>
@@ -326,6 +390,15 @@ export default function DashboardOverlay({
         onSubmit={handleCreateStorySubmit}
         isCreating={isCreatingStory}
         createError={createStoryError}
+      />
+      {/* Render Edit Story Modal */}
+      <EditStoryModal
+        isOpen={isEditModalOpen}
+        onClose={handleCloseEditModal}
+        story={editingStory} // Pass the story being edited
+        onSubmit={handleUpdateStorySubmit}
+        isUpdating={isUpdatingStory}
+        updateError={updateStoryError}
       />
     </>
   );

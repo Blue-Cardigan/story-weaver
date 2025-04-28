@@ -51,6 +51,8 @@ export default function Home() {
   const [newChapterSynopsis, setNewChapterSynopsis] = useState('');
   const [synopsis, setSynopsis] = useState('');
   const [styleNote, setStyleNote] = useState('');
+  const [globalSynopsis, setGlobalSynopsis] = useState<string | null>(null);
+  const [globalStyleNote, setGlobalStyleNote] = useState<string | null>(null);
   const [partInstructions, setPartInstructions] = useState('');
   const [length, setLength] = useState<number | ''>(500);
   const [useWebSearch, setUseWebSearch] = useState(false);
@@ -930,7 +932,24 @@ export default function Home() {
           </div>
         )}
 
-        {generatedStory && (
+        {isLoading && (
+          <div className="mt-8 p-6 bg-slate-50/50 border border-slate-200/80 rounded-lg shadow-inner space-y-4 animate-pulse">
+            <div className="h-6 bg-slate-200 rounded w-3/4 mb-4"></div>
+            <div className="space-y-2">
+              <div className="h-4 bg-slate-200 rounded"></div>
+              <div className="h-4 bg-slate-200 rounded w-5/6"></div>
+              <div className="h-4 bg-slate-200 rounded w-4/6"></div>
+              <div className="h-4 bg-slate-200 rounded w-5/6"></div>
+            </div>
+             <div className="h-8 w-full bg-slate-200 rounded my-4"></div>
+            <div className="pt-4 border-t border-slate-200 flex justify-end space-x-3">
+              <div className="h-8 w-20 bg-slate-200 rounded"></div>
+              <div className="h-8 w-20 bg-slate-200 rounded"></div>
+            </div>
+          </div>
+        )}
+
+        {!isLoading && generatedStory && (
           <div className="mt-8 p-6 bg-slate-50/50 border border-slate-200/80 rounded-lg shadow-inner space-y-4">
             <h2 className="text-xl font-semibold text-slate-700">
                 {activeStoryId ? 'Generated Next Part' : 'Generated Story'} (ID: {currentGenerationId?.substring(0, 8)}...):
@@ -990,6 +1009,14 @@ export default function Home() {
               </div>
             </div> 
           </div>
+        )}
+
+        {!isLoading && !generatedStory && !error && (
+           <div className="mt-8 p-6 bg-slate-50/50 border border-slate-200/80 rounded-lg shadow-inner text-center">
+             <p className="text-slate-500 italic">
+               {activeStoryId ? "What will you write next? I'm fizzing with excitement..." : "What will you write today, you creative beauty?"}
+             </p>
+           </div>
         )}
 
       </div>
@@ -1094,6 +1121,8 @@ export default function Home() {
         onClose={closeDashboard} 
         user={user}
         setActiveStoryId={setActiveStoryId}
+        setGlobalSynopsis={setGlobalSynopsis}
+        setGlobalStyleNote={setGlobalStyleNote}
       />
     </main>
   );
