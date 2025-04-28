@@ -208,7 +208,7 @@ export async function POST(request: Request) {
             initialContext += '\n\n';
          }
 
-        let lengthGuidance = '';
+        const lengthGuidance = '';
         if (typeof storyTargetLength === 'number' && storyTargetLength > 0) { /* ... add length guidance ... */ }
 
         currentPromptText = `${initialContext}${lengthGuidance}Continue the story within the current chapter based on the previous part (if provided). Write the next section according to these instructions, keeping the style consistent (Style Note: ${effectiveStyleNote}). Aim for this part to be approximately ${length} words long. Incorporate web search results if relevant.\n\nInstructions for this part:\n${partInstructions}\n\nNext Story Section (within Chapter ${chapterDetails.chapter_number}):`;
