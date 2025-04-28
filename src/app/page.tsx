@@ -773,7 +773,7 @@ export default function Home() {
        <div className={`fixed top-0 left-0 right-0 z-20 flex items-center justify-between p-4 md:p-6 transition-all duration-300 ${!isChatCollapsed ? 'pr-[22rem]' : 'pr-4'} bg-gradient-to-b from-white/80 via-white/50 to-transparent`}>
          <div className="flex items-center space-x-4">
             <h1 className="text-2xl md:text-3xl font-semibold text-transparent bg-clip-text bg-gradient-to-r from-slate-600 to-gray-800 py-1">
-              Story Weaver AI
+              Story Weaver
             </h1>
              {/* Show AuthButton (Sign in/up) or Dashboard Trigger */}
             {!authLoading && (
