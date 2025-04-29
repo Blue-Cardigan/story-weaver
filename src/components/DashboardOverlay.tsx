@@ -16,7 +16,8 @@ type Story = Database['public']['Tables']['stories']['Row'];
 type StoryStructure = Database['public']['Enums']['story_structure_type'];
 
 // Define a type for the story data needed by the chapter overlay
-interface StoryForChapterGen extends Pick<Story, 'id' | 'title' | 'global_synopsis' | 'global_style_note' | 'global_additional_notes' | 'target_length'> {}
+// interface StoryForChapterGen extends Pick<Story, 'id' | 'title' | 'global_synopsis' | 'global_style_note' | 'global_additional_notes' | 'target_length'> {}
+type StoryForChapterGen = Pick<Story, 'id' | 'title' | 'global_synopsis' | 'global_style_note' | 'global_additional_notes' | 'target_length'>;
 
 interface DashboardOverlayProps {
   isOpen: boolean;
