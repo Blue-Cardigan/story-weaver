@@ -829,8 +829,14 @@ export default function Home() {
                                 <p className="text-sm text-gray-800 bg-white/50 p-2 rounded border border-gray-200/50 whitespace-pre-wrap">{activeStoryDetails.global_style_note}</p>
                             </div>
                         )}
-                        {!activeStoryDetails.global_synopsis && !activeStoryDetails.global_style_note && (
-                            <p className="text-sm text-slate-500 italic">No global synopsis or style note set for this story.</p>
+                        {activeStoryDetails.global_additional_notes && (
+                            <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Global Additional Notes</label>
+                                <p className="text-sm text-gray-800 bg-white/50 p-2 rounded border border-gray-200/50 whitespace-pre-wrap">{activeStoryDetails.global_additional_notes}</p>
+                            </div>
+                        )}
+                        {!activeStoryDetails.global_synopsis && !activeStoryDetails.global_style_note && !activeStoryDetails.global_additional_notes && (
+                            <p className="text-sm text-slate-500 italic">No global notes set for this story.</p>
                         )}
                     </div>
 
@@ -1129,11 +1135,34 @@ export default function Home() {
                       return (
                         <section key={chapterKey} className="space-y-4">
                            {chapter && (
-                              <h3 className="text-lg font-semibold text-blue-700 border-b border-blue-200 pb-1 sticky top-0 bg-white/80 backdrop-blur-sm py-1 -mx-4 px-4 z-10 flex justify-between items-center">
-                                  <span>
-                                    Chapter {chapter.chapter_number}{chapter.title ? `: ${chapter.title}` : ''}
-                                  </span>
-                              </h3>
+                              <div className="sticky top-0 bg-white/80 backdrop-blur-sm py-1 -mx-4 px-4 z-10 border-b border-blue-200 mb-2">
+                                <div className="flex justify-between items-center mb-1">
+                                  <h3 className="text-lg font-semibold text-blue-700">
+                                      Chapter {chapter.chapter_number}{chapter.title ? `: ${chapter.title}` : ''}
+                                  </h3>
+                                  <button 
+                                      onClick={() => handleOpenEditChapterModal(chapter)}
+                                      className="ml-2 text-xs text-blue-600 hover:text-blue-800 p-1 rounded hover:bg-blue-100/50 transition-colors">
+                                      Edit
+                                  </button>
+                                </div>
+                                {(chapter.style_notes || chapter.additional_notes) && (
+                                  <div className="text-xs text-gray-700 space-y-1 pb-1">
+                                    {chapter.style_notes && (
+                                      <div>
+                                        <span className="font-medium text-gray-600">Style:</span>
+                                        <p className="pl-2 whitespace-pre-wrap">{chapter.style_notes}</p>
+                                      </div>
+                                    )}
+                                    {chapter.additional_notes && (
+                                      <div>
+                                        <span className="font-medium text-gray-600">Notes:</span>
+                                        <p className="pl-2 whitespace-pre-wrap">{chapter.additional_notes}</p>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
                            )}
                            {chapterKey === 'uncategorized' && partsInGroup.length > 0 && (
                                <h3 className="text-lg font-semibold text-gray-600 border-b border-gray-200 pb-1 sticky top-0 bg-white/80 backdrop-blur-sm py-1 -mx-4 px-4 z-10">

@@ -69,7 +69,7 @@ export default function CreateStoryModal({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm animate-fade-in-fast">
+    <div className="fixed inset-0 z-70 flex items-center justify-center bg-black/30 backdrop-blur-sm animate-fade-in-fast">
       <div className="bg-gradient-to-br from-gray-50 to-slate-100 p-6 rounded-lg shadow-xl w-full max-w-lg border border-gray-200/50 relative">
         {/* Close Button */} 
         <button 

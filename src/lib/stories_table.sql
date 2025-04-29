@@ -13,6 +13,7 @@ create table public.stories (
   structure_type story_structure_type not null default 'short_story',
   global_synopsis text null,
   global_style_note text null,
+  global_additional_notes text null, -- Added global additional notes
   user_id uuid null,
   user_identifier text null, -- For anonymous users
 

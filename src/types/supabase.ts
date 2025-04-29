@@ -11,10 +11,12 @@ export type Database = {
     Tables: {
       chapters: {
         Row: {
+          additional_notes: string | null
           chapter_number: number
           created_at: string
           id: string
           story_id: string
+          style_notes: string | null
           synopsis: string | null
           title: string | null
           updated_at: string
@@ -22,10 +24,12 @@ export type Database = {
           user_identifier: string | null
         }
         Insert: {
+          additional_notes?: string | null
           chapter_number: number
           created_at?: string
           id?: string
           story_id: string
+          style_notes?: string | null
           synopsis?: string | null
           title?: string | null
           updated_at?: string
@@ -33,10 +37,12 @@ export type Database = {
           user_identifier?: string | null
         }
         Update: {
+          additional_notes?: string | null
           chapter_number?: number
           created_at?: string
           id?: string
           story_id?: string
+          style_notes?: string | null
           synopsis?: string | null
           title?: string | null
           updated_at?: string
@@ -137,6 +143,7 @@ export type Database = {
       stories: {
         Row: {
           created_at: string
+          global_additional_notes: string | null
           global_style_note: string | null
           global_synopsis: string | null
           id: string
@@ -149,6 +156,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
+          global_additional_notes?: string | null
           global_style_note?: string | null
           global_synopsis?: string | null
           id?: string
@@ -161,6 +169,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
+          global_additional_notes?: string | null
           global_style_note?: string | null
           global_synopsis?: string | null
           id?: string

@@ -11,7 +11,7 @@
         context: any
     ) {
         const supabase = createSupabaseServerClient();
-        const { storyId } = context.params;
+        const { storyId } = await context.params;
 
         if (!storyId) {
             return NextResponse.json({ error: "Missing story ID" }, { status: 400 });

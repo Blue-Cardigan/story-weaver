@@ -30,6 +30,7 @@ const baseGenerationConfig: CustomGenerationConfig = {
 // Define the type for generation data more accurately based on schema
 type NewGenerationPayload = Database['public']['Tables']['story_generations']['Insert'];
 type DbChapter = Database['public']['Tables']['chapters']['Row']; // Add Chapter type
+type Story = Database['public']['Tables']['stories']['Row']; // Add Story type
 
 interface FetchedGeneration {
     id: string;
@@ -58,7 +59,7 @@ async function fetchParentGeneration(id: string, supabase: ReturnType<typeof cre
 async function fetchChapterDetails(id: string, supabase: ReturnType<typeof createSupabaseServerClient>): Promise<DbChapter | null> {
   const { data, error } = await supabase
     .from('chapters')
-    .select('id, synopsis, chapter_number, title') // Select needed fields
+    .select('id, synopsis, chapter_number, title, style_notes, additional_notes') // Added style_notes, additional_notes
     .eq('id', id)
     .single();
 
@@ -107,21 +108,23 @@ export async function POST(request: Request) {
 
     let isBookMode = false; // Flag to check if we are in book mode
     let chapterDetails: DbChapter | null = null;
+    let fetchedStoryData: Story | null = null; // Use a different name for the full fetch
 
     // Mode-specific validation
     if (storyId) {
-      // Need to know the story's structure type
-       const { data: storyData, error: storyFetchError } = await supabase
+      // Need to know the story's structure type AND fetch all details
+       const { data: storyDetailsData, error: storyFetchError } = await supabase
           .from('stories')
-          .select('structure_type')
+          .select('structure_type, global_synopsis, global_style_note, global_additional_notes') // Fetch all needed fields here
           .eq('id', storyId)
-          .maybeSingle(); // Use maybeSingle as RLS might deny access
+          .maybeSingle();
 
-       if (storyFetchError || !storyData) {
-           console.error(`Generate: Error fetching story ${storyId} structure or access denied:`, storyFetchError);
-            return NextResponse.json({ error: 'Failed to verify story structure or access denied' }, { status: 403 }); // Or 404
+       if (storyFetchError || !storyDetailsData) {
+           console.error(`Generate: Error fetching story ${storyId} details or access denied:`, storyFetchError);
+            return NextResponse.json({ error: 'Failed to fetch story details or access denied' }, { status: 403 });
        }
-       isBookMode = storyData.structure_type === 'book';
+       fetchedStoryData = storyDetailsData as Story; // Assign to the outer scope variable
+       isBookMode = fetchedStoryData.structure_type === 'book';
 
       if (isBookMode) {
           // Book mode requires a chapterId unless refining
@@ -155,8 +158,8 @@ export async function POST(request: Request) {
          }
     }
 
-    // Determine effective style
-    const effectiveStyleNote = globalStyleNote || styleNote; // Prefer global if available
+    // Determine effective style: Prioritize chapter, then global, then standalone
+    const effectiveStyleNote = chapterDetails?.style_notes || fetchedStoryData?.global_style_note || styleNote;
 
     // Create a local config for this request based on the base config
     const requestConfig: CustomGenerationConfig = { ...baseGenerationConfig };
@@ -183,7 +186,27 @@ export async function POST(request: Request) {
         }
 
         basePromptForDb = refinementFeedback; // The feedback is the core instruction
-        currentPromptText = `Refine the previous story segment based on the following feedback. Maintain the established style (Style Note: ${effectiveStyleNote}) and aim for a length of approximately ${length} words. Incorporate web search results if relevant and helpful.\n\nFeedback:\n${refinementFeedback}\n\nRefined Story Segment:`;
+
+        // Determine context for refinement prompt
+        let refinementContext = 'Refine the previous story segment based on the following feedback.';
+        const effectiveStyleNoteForRefine = chapterDetails?.style_notes || fetchedStoryData?.global_style_note || styleNote;
+        refinementContext += ` Maintain the established style (Effective Style Note: ${effectiveStyleNoteForRefine}).`;
+        // Add chapter context if available
+        if (chapterDetails) {
+            refinementContext += ` This segment is part of Chapter ${chapterDetails.chapter_number}${chapterDetails.title ? ` (\"${chapterDetails.title}\")` : ''}.`;
+            if(chapterDetails.synopsis) refinementContext += ` Chapter Synopsis: ${chapterDetails.synopsis}.`;
+            // Include chapter notes in refinement context too?
+            if(chapterDetails.style_notes) refinementContext += ` Chapter Style Notes: ${chapterDetails.style_notes}.`;
+            if(chapterDetails.additional_notes) refinementContext += ` Chapter Additional Notes: ${chapterDetails.additional_notes}.`;
+        }
+        // Add global context if available (and not already implicitly covered by chapter?)
+        if (fetchedStoryData && !chapterDetails) { // Only add global if no chapter context provided
+            if(fetchedStoryData.global_synopsis) refinementContext += ` Overall Story Synopsis: ${fetchedStoryData.global_synopsis}.`;
+            if(fetchedStoryData.global_style_note) refinementContext += ` Overall Story Style Note: ${fetchedStoryData.global_style_note}.`; // Already in effectiveStyleNote but maybe useful explicitly?
+            if(fetchedStoryData.global_additional_notes) refinementContext += ` Overall Story Additional Notes: ${fetchedStoryData.global_additional_notes}.`;
+        }
+
+        currentPromptText = `${refinementContext} Aim for a length of approximately ${length} words. Incorporate web search results if relevant and helpful.\n\nFeedback:\n${refinementFeedback}\n\nRefined Story Segment:`;
 
       } else if (storyId && isBookMode) {
         // --- Book Chapter Part Generation Logic ---
@@ -202,8 +225,22 @@ export async function POST(request: Request) {
             if (chapterDetails.synopsis) {
                 initialContext += `Chapter Synopsis: ${chapterDetails.synopsis}. `;
             }
-            if (globalSynopsis) {
-                 initialContext += `Overall Story Synopsis: ${globalSynopsis}. `;
+            // Add Chapter Notes if they exist
+            if (chapterDetails.style_notes) {
+                initialContext += `Chapter Style Notes: ${chapterDetails.style_notes}. `;
+            }
+            if (chapterDetails.additional_notes) {
+                initialContext += `Chapter Additional Notes: ${chapterDetails.additional_notes}. `;
+            }
+            // Add Global context (Synopis, Style, Additional Notes)
+            if (fetchedStoryData?.global_synopsis) {
+                 initialContext += `Overall Story Synopsis: ${fetchedStoryData.global_synopsis}. `;
+            }
+            if (fetchedStoryData?.global_style_note) {
+                 initialContext += `Overall Story Style Note: ${fetchedStoryData.global_style_note}. `;
+            }
+            if (fetchedStoryData?.global_additional_notes) {
+                 initialContext += `Overall Story Additional Notes: ${fetchedStoryData.global_additional_notes}. `;
             }
             initialContext += '\n\n';
          }
@@ -211,7 +248,7 @@ export async function POST(request: Request) {
         const lengthGuidance = '';
         if (typeof storyTargetLength === 'number' && storyTargetLength > 0) { /* ... add length guidance ... */ }
 
-        currentPromptText = `${initialContext}${lengthGuidance}Continue the story within the current chapter based on the previous part (if provided). Write the next section according to these instructions, keeping the style consistent (Style Note: ${effectiveStyleNote}). Aim for this part to be approximately ${length} words long. Incorporate web search results if relevant.\n\nInstructions for this part:\n${partInstructions}\n\nNext Story Section (within Chapter ${chapterDetails.chapter_number}):`;
+        currentPromptText = `${initialContext}${lengthGuidance}Continue the story within the current chapter based on the previous part (if provided). Write the next section according to these instructions, keeping the style consistent (Effective Style Note for this part: ${effectiveStyleNote}). Aim for this part to be approximately ${length} words long. Incorporate web search results if relevant.\n\nInstructions for this part:\n${partInstructions}\n\nNext Story Section (within Chapter ${chapterDetails.chapter_number}):`;
 
       } else if (storyId) {
         // Story Part Generation Logic
@@ -221,10 +258,17 @@ export async function POST(request: Request) {
 
         if (previousPartContent) { historyContents.push({ role: "model", parts: [{ text: previousPartContent }] }); }
 
-        basePromptForDb = partInstructions; // The instructions are the core prompt
         let initialContext = '';
-        if (!previousPartContent && globalSynopsis) {
-            initialContext = `You are writing a story. Overall Synopsis: ${globalSynopsis}\n\n`;
+        if (!previousPartContent && fetchedStoryData?.global_synopsis) {
+            initialContext = `You are writing a story. Overall Synopsis: ${fetchedStoryData.global_synopsis}. `;
+            // Add other global notes if synopsis exists
+            if (fetchedStoryData.global_style_note) {
+                 initialContext += `Overall Style Note: ${fetchedStoryData.global_style_note}. `;
+            }
+            if (fetchedStoryData.global_additional_notes) {
+                 initialContext += `Overall Additional Notes: ${fetchedStoryData.global_additional_notes}. `;
+            }
+             initialContext += '\n\n';
         }
 
         let lengthGuidance = '';
@@ -234,7 +278,10 @@ export async function POST(request: Request) {
             lengthGuidance += `You are about ${percentage}% of the way through the story.`;
         }
 
-        currentPromptText = `${initialContext}${lengthGuidance}Continue the story based on the previous part (if provided). Write the next part according to these instructions, keeping the style consistent. Style Note: ${effectiveStyleNote}. Aim for this part to be approximately ${length} words long. Incorporate web search results if relevant and helpful.\n\nInstructions for this part:\n${partInstructions}\n\nNext Story Part:`;
+        // Determine effective style (No chapter notes here)
+        const effectiveStyleNoteForStoryPart = fetchedStoryData?.global_style_note || styleNote;
+
+        currentPromptText = `${initialContext}${lengthGuidance}Continue the story based on the previous part (if provided). Write the next part according to these instructions, keeping the style consistent. Style Note: ${effectiveStyleNoteForStoryPart}. Aim for this part to be approximately ${length} words long. Incorporate web search results if relevant and helpful.\n\nInstructions for this part:\n${partInstructions}\n\nNext Story Part:`;
 
     } else {
       // Standalone Initial Generation Logic

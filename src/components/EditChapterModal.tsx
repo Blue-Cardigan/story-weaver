@@ -9,6 +9,8 @@ export interface ChapterUpdatePayload {
   chapter_number?: number;
   title?: string | null;
   synopsis?: string | null;
+  style_notes?: string | null;
+  additional_notes?: string | null;
 }
 
 interface EditChapterModalProps {
@@ -31,6 +33,8 @@ export default function EditChapterModal({
   const [chapterNumber, setChapterNumber] = useState<number | ''>('');
   const [title, setTitle] = useState('');
   const [synopsis, setSynopsis] = useState('');
+  const [styleNotes, setStyleNotes] = useState('');
+  const [additionalNotes, setAdditionalNotes] = useState('');
 
   // Pre-fill form when chapter data is available or changes
   useEffect(() => {
@@ -38,11 +42,15 @@ export default function EditChapterModal({
       setChapterNumber(chapter.chapter_number ?? '');
       setTitle(chapter.title ?? '');
       setSynopsis(chapter.synopsis ?? '');
+      setStyleNotes(chapter.style_notes ?? '');
+      setAdditionalNotes(chapter.additional_notes ?? '');
     } else {
       // Reset form if no chapter (e.g., modal closed)
       setChapterNumber('');
       setTitle('');
       setSynopsis('');
+      setStyleNotes('');
+      setAdditionalNotes('');
     }
   }, [chapter]);
 
@@ -60,6 +68,12 @@ export default function EditChapterModal({
     }
     if (synopsis !== (chapter.synopsis ?? '')) {
       payload.synopsis = synopsis.trim() || null;
+    }
+    if (styleNotes !== (chapter.style_notes ?? '')) {
+      payload.style_notes = styleNotes.trim() || null;
+    }
+    if (additionalNotes !== (chapter.additional_notes ?? '')) {
+      payload.additional_notes = additionalNotes.trim() || null;
     }
     
     // Only submit if there are actual changes
@@ -135,6 +149,30 @@ export default function EditChapterModal({
               className={inputClasses}
               disabled={isUpdating}
               placeholder="Brief summary of the chapter..."
+            />
+          </div>
+          <div>
+            <label htmlFor="editChapterStyleNotes" className={labelClasses}>Style Notes (Optional)</label>
+            <textarea
+              id="editChapterStyleNotes"
+              rows={3}
+              value={styleNotes}
+              onChange={(e) => setStyleNotes(e.target.value)}
+              className={inputClasses}
+              disabled={isUpdating}
+              placeholder="Notes on writing style, tone, perspective for this chapter..."
+            />
+          </div>
+          <div>
+            <label htmlFor="editChapterAdditionalNotes" className={labelClasses}>Additional Notes (Optional)</label>
+            <textarea
+              id="editChapterAdditionalNotes"
+              rows={3}
+              value={additionalNotes}
+              onChange={(e) => setAdditionalNotes(e.target.value)}
+              className={inputClasses}
+              disabled={isUpdating}
+              placeholder="Any other miscellaneous notes for this chapter..."
             />
           </div>
 

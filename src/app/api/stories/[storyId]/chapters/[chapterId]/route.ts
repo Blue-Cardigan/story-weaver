@@ -36,13 +36,15 @@ export async function PATCH(
   try {
     // Parse the request body for update fields
     const body = await request.json();
-    const { chapter_number, title, synopsis } = body;
+    const { chapter_number, title, synopsis, style_notes, additional_notes } = body;
 
     // Construct update object, only including defined fields
-    const updateData: Partial<Pick<Chapter, 'chapter_number' | 'title' | 'synopsis' | 'updated_at'>> = {};
+    const updateData: Partial<Pick<Chapter, 'chapter_number' | 'title' | 'synopsis' | 'style_notes' | 'additional_notes' | 'updated_at'>> = {};
     if (chapter_number !== undefined) updateData.chapter_number = chapter_number;
     if (title !== undefined) updateData.title = title;
     if (synopsis !== undefined) updateData.synopsis = synopsis;
+    if (style_notes !== undefined) updateData.style_notes = style_notes;
+    if (additional_notes !== undefined) updateData.additional_notes = additional_notes;
 
     if (Object.keys(updateData).length === 0) {
         return NextResponse.json({ error: 'No update fields provided' }, { status: 400 });

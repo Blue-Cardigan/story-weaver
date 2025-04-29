@@ -8,11 +8,15 @@ import { v4 as uuidv4 } from 'uuid'; // For anon ID
 import CreateStoryModal from './CreateStoryModal'; // Import the modal
 import EditStoryModal from './EditStoryModal'; // Import EditStoryModal
 import type { StoryUpdatePayload } from './EditStoryModal'; // Import payload type
+import GenerateChaptersOverlay from './GenerateChaptersOverlay'; // Import the new component
 
 const ANON_USER_ID_KEY = 'storyWeaverAnonUserId'; // Reuse the key from page.tsx
 
 type Story = Database['public']['Tables']['stories']['Row'];
 type StoryStructure = Database['public']['Enums']['story_structure_type'];
+
+// Define a type for the story data needed by the chapter overlay
+interface StoryForChapterGen extends Pick<Story, 'id' | 'title' | 'global_synopsis' | 'global_style_note' | 'global_additional_notes' | 'target_length'> {}
 
 interface DashboardOverlayProps {
   isOpen: boolean;
@@ -50,6 +54,11 @@ export default function DashboardOverlay({
   const [isUpdatingStory, setIsUpdatingStory] = useState(false);
   const [updateStoryError, setUpdateStoryError] = useState<string | null>(null);
   // --- End Edit State ---
+
+  // --- State for Chapter Generation Overlay ---
+  const [isChapterGenOverlayOpen, setIsChapterGenOverlayOpen] = useState(false);
+  const [currentStoryForChapterGen, setCurrentStoryForChapterGen] = useState<StoryForChapterGen | null>(null);
+  // --------------------------------------------
 
   // Get anonymous identifier on mount
   useEffect(() => {
@@ -119,6 +128,9 @@ export default function DashboardOverlay({
       setIsEditModalOpen(false);
       setUpdateStoryError(null);
       setEditingStory(null);
+      // Close chapter gen overlay if dashboard is closed
+      setIsChapterGenOverlayOpen(false);
+      setCurrentStoryForChapterGen(null);
     }
   }, [isOpen, effectiveIdentifier, fetchStories]);
 
@@ -138,6 +150,9 @@ export default function DashboardOverlay({
       setIsEditModalOpen(false);
       setUpdateStoryError(null);
       setEditingStory(null);
+      // Reset chapter gen state on logout too
+      setIsChapterGenOverlayOpen(false);
+      setCurrentStoryForChapterGen(null);
       onClose(); // Close overlay on successful logout
     }
     setLoadingLogout(false);
@@ -158,6 +173,7 @@ export default function DashboardOverlay({
       structure_type: StoryStructure; 
       global_synopsis?: string; 
       global_style_note?: string;
+      global_additional_notes?: string; // Added field
       target_length?: number;
   }) => {
     if (!effectiveIdentifier) {
@@ -191,6 +207,23 @@ export default function DashboardOverlay({
         // Success
         handleCloseCreateModal(); // Close modal on success
         fetchStories(); // Refresh the story list
+
+        // --- Trigger Chapter Generation Overlay for 'book' type ---
+        // Assuming 'result' contains the newly created story object from the API
+        const newStory = result as Story; // Cast the result (needs validation)
+        if (newStory && formData.structure_type === 'book') {
+            console.log("Dashboard: Book type detected, preparing chapter generation overlay...");
+            setCurrentStoryForChapterGen({
+                id: newStory.id,
+                title: newStory.title ?? '', // Ensure title is not null
+                global_synopsis: newStory.global_synopsis,
+                global_style_note: newStory.global_style_note,
+                global_additional_notes: newStory.global_additional_notes,
+                target_length: newStory.target_length,
+            });
+            setIsChapterGenOverlayOpen(true);
+        }
+        // ---------------------------------------------------------
 
     } catch (err) {
         console.error('Dashboard: Failed to create story:', err);
@@ -400,6 +433,24 @@ export default function DashboardOverlay({
         isUpdating={isUpdatingStory}
         updateError={updateStoryError}
       />
+      {/* --- Render the Chapter Generation Overlay --- */}
+      {isChapterGenOverlayOpen && currentStoryForChapterGen && (
+        <GenerateChaptersOverlay
+            isOpen={isChapterGenOverlayOpen}
+            onClose={() => {
+              setIsChapterGenOverlayOpen(false);
+              setCurrentStoryForChapterGen(null); // Clear story data on close
+            }}
+            storyId={currentStoryForChapterGen.id}
+            storyTitle={currentStoryForChapterGen.title}
+            globalSynopsis={currentStoryForChapterGen.global_synopsis}
+            globalStyleNote={currentStoryForChapterGen.global_style_note}
+            globalAdditionalNotes={currentStoryForChapterGen.global_additional_notes}
+            targetLength={currentStoryForChapterGen.target_length}
+            // userIdentifier={!user ? anonUserIdentifier : undefined} // Pass identifier if needed by API
+        />
+      )}
+      {/* ------------------------------------------- */}
     </>
   );
 } 
