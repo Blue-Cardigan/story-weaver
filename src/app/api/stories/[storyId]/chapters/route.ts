@@ -1,76 +1,88 @@
     // src/app/api/stories/[storyId]/chapters/route.ts
-    import { createSupabaseServerClient } from "@/lib/supabaseServerClient";
-    import { Database } from "@/types/supabase";
-    import { NextRequest, NextResponse } from "next/server";
+    import { createSupabaseServerClient } from '@/lib/supabaseServerClient';
+    import { Database } from '@/types/supabase';
+    import { NextRequest, NextResponse } from 'next/server';
 
-    type NewChapterPayload = Database['public']['Tables']['chapters']['Insert'];
+    type ChapterOutline = Database['public']['Tables']['chapters']['Insert'];
     type DbChapter = Database['public']['Tables']['chapters']['Row'];
 
     export async function POST(
-        request: NextRequest,
-        context: any
+        req: NextRequest,
+        { params }: { params: { storyId: string } }
     ) {
-        const supabase = createSupabaseServerClient();
-        const { storyId } = await context.params;
+        const supabaseServer = createSupabaseServerClient();
+        const { storyId } = params;
 
         if (!storyId) {
-            return NextResponse.json({ error: "Missing story ID" }, { status: 400 });
+            return NextResponse.json({ error: 'Story ID is required' }, { status: 400 });
         }
 
-        const { data: { user } } = await supabase.auth.getUser();
-        const anonUserIdentifier = request.headers.get('X-User-Identifier');
+        let userId: string | null = null;
+        let userIdentifier: string | null = null;
+
+        // Check for logged-in user session
+        const { data: { session } } = await supabaseServer.auth.getSession();
+
+        if (session?.user?.id) {
+            userId = session.user.id;
+        } else {
+            // Check for anonymous user identifier header
+            userIdentifier = req.headers.get('X-User-Identifier');
+            if (!userIdentifier) {
+                return NextResponse.json({ error: 'Unauthorized: User session or identifier required' }, { status: 401 });
+            }
+            // Optional: Validate if a story with this user_identifier exists for this storyId?
+            // This might be redundant if the delete operation below correctly targets the identifier.
+        }
+
+        let chaptersToInsert: Omit<ChapterOutline, 'id' | 'created_at' | 'updated_at'>[] = [];
 
         try {
-            const payload = await request.json();
-
-            // Validation
-            if (!payload.chapter_number || typeof payload.chapter_number !== 'number' || payload.chapter_number <= 0) {
-                 return NextResponse.json({ error: "Valid chapter number is required." }, { status: 400 });
+            const body = await req.json();
+            if (!Array.isArray(body.chapters)) {
+                throw new Error('Invalid input: chapters must be an array.');
             }
-            // Synopsis is optional for creation, can be added later
 
-            const newChapterData: Partial<NewChapterPayload> = {
+            chaptersToInsert = body.chapters.map((chapter: any, index: number) => ({
                 story_id: storyId,
-                chapter_number: Math.floor(payload.chapter_number),
-                title: payload.title || null,
-                synopsis: payload.synopsis || null,
-            };
+                chapter_number: index + 1, // Assign chapter number based on array order
+                title: chapter.title?.trim() || null,
+                synopsis: chapter.synopsis?.trim() || null,
+                style_notes: chapter.style_notes?.trim() || null,
+                additional_notes: chapter.additional_notes?.trim() || null,
+                user_id: userId, // Set user_id if logged in
+                user_identifier: userId ? null : userIdentifier, // Set user_identifier if anonymous
+            }));
 
-            if (user) {
-                newChapterData.user_id = user.id;
-            } else if (anonUserIdentifier) {
-                newChapterData.user_identifier = anonUserIdentifier;
-            } else {
-                return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+            if (chaptersToInsert.length === 0) {
+                // If the array is empty, just delete existing chapters
+                 console.log(`No chapters provided for story ${storyId}. Deleting existing chapters.`);
             }
-
-            // Verify user owns the parent story (RLS on chapters should implicitly handle this if linked correctly, but explicit check is safer)
-            // You might add a check here to see if the user/identifier owns the story `storyId` before inserting.
-
-            const { data, error } = await supabase
-                .from('chapters')
-                .insert(newChapterData as NewChapterPayload)
-                .select()
-                .single();
-
-            if (error) {
-                console.error("Error creating chapter:", error);
-                 if (error.code === '23505') { // unique_violation (story_id, chapter_number)
-                    return NextResponse.json({ error: `Chapter number ${newChapterData.chapter_number} already exists for this story.` }, { status: 409 });
-                 }
-                if (error.code === '42501') { // RLS
-                    return NextResponse.json({ error: "Authorization failed to create chapter." }, { status: 403 });
-                }
-                throw new Error(error.message);
-            }
-
-            console.log(`Successfully created chapter ${data.chapter_number} for story ${storyId}`);
-            return NextResponse.json(data as DbChapter, { status: 201 });
 
         } catch (error) {
-            console.error(`API POST /stories/${storyId}/chapters error:`, error);
-            const message = error instanceof Error ? error.message : "An unknown error occurred";
-            return NextResponse.json({ error: `Failed to create chapter: ${message}` }, { status: 500 });
+            console.error('Error parsing request body or mapping chapters:', error);
+            return NextResponse.json({ error: 'Invalid request body. Expecting { chapters: [...] }' }, { status: 400 });
+        }
+
+        try {
+            // Use a transaction to ensure atomicity: delete old, insert new
+            const { error: transactionError } = await supabaseServer.rpc('save_chapters' as any, {
+                _story_id: storyId,
+                _user_id: userId,
+                _user_identifier: userIdentifier,
+                _chapters: chaptersToInsert
+            });
+
+            if (transactionError) {
+                throw transactionError;
+            }
+
+            console.log(`Successfully saved ${chaptersToInsert.length} chapters for story ${storyId}`);
+            return NextResponse.json({ message: 'Chapter plan saved successfully', count: chaptersToInsert.length }, { status: 200 });
+
+        } catch (error: any) {
+            console.error(`Error saving chapters for story ${storyId}:`, error);
+            return NextResponse.json({ error: `Database error: ${error.message || 'Failed to save chapter plan'}` }, { status: 500 });
         }
     }
 
@@ -79,7 +91,7 @@
         context: any
     ) {
         const supabase = createSupabaseServerClient();
-        const { storyId } = context.params;
+        const { storyId } = await context.params;
 
         if (!storyId) {
             return NextResponse.json({ error: "Missing story ID" }, { status: 400 });

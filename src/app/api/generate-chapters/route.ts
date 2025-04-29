@@ -100,7 +100,7 @@ export async function POST(request: Request) {
 
 
     // --- Construct Prompt for AI ---
-    let prompt = `You are an expert story planner. Based on the following overall story details, generate exactly ${numChapters} chapter outlines.`;
+    let prompt = `You are an expert story planner. Based on the following overall story details, generate around ${numChapters} chapter outlines.`;
 
     if (targetBookLength && targetBookLength > 0) {
         prompt += ` The entire book is intended to be approximately ${targetBookLength.toLocaleString()} words long.`;
@@ -109,7 +109,7 @@ export async function POST(request: Request) {
     prompt += "\\n\\nOverall Story Synopsis:\\n" + (globalSynopsis || "Not provided.") + "\\n";
     prompt += "\\nOverall Story Style Note:\\n" + (globalStyleNote || "Not specified.") + "\\n";
     if (globalAdditionalNotes) {
-        prompt += "\\nOverall Story Additional Notes:\\n" + globalAdditionalNotes + "\\n";
+        prompt += "\\nAdditional Notes:\\n" + globalAdditionalNotes + "\\n";
     }
     if (generationNotes) {
         prompt += "\\nSpecific Instructions for Chapter Planning:\\n" + generationNotes + "\\n";
@@ -117,7 +117,7 @@ export async function POST(request: Request) {
 
     prompt += `\\n\\nPlease provide the output STRICTLY as a JSON array where each object represents a chapter and has the following keys:
 - "title": A compelling title for the chapter. (string).
-- "synopsis": A brief summary (1-3 sentences) of the key events or focus of the chapter (string).
+- "synopsis": A detailed summary, outlining the key events, focus of the chapter, and any other relevant details including thematic elements, character development, and any other relevant details (string).
 - "style_notes": (Optional) Specific style notes for this chapter, if any (string or null).
 - "additional_notes": (Optional) Any other relevant notes for this chapter (string or null).
 
@@ -226,20 +226,21 @@ Generate exactly ${numChapters} chapter objects in the array.`;
             user_identifier: !user ? userIdentifier : null, // Assign identifier if no user
         }));
 
-        console.log(`Attempting to insert ${chaptersToInsert.length} chapters into database...`);
+        console.log(`Attempting to save ${chaptersToInsert.length} chapters to database for story ${storyId} (will replace existing)...`);
 
-        const { error: insertError } = await supabase
-            .from('chapters')
-            .insert(chaptersToInsert);
+        // Use the same save_chapters function as the dedicated chapter save endpoint
+        const { error: saveError } = await supabase.rpc('save_chapters' as any, {
+            _story_id: storyId,
+            _user_id: user ? user.id : null,
+            _user_identifier: !user ? userIdentifier : null,
+            _chapters: chaptersToInsert
+        });
 
-        if (insertError) {
-            console.error('Supabase chapter insert error:', insertError);
-            // Don't necessarily block the response to the user, but log the error.
-            // Consider how critical saving is vs. showing the user the generated plan.
-            // Maybe return the chapters but include a warning? For now, return error.
-             return NextResponse.json({ error: `Failed to save generated chapters to database. ${insertError.message}` }, { status: 500 });
+        if (saveError) {
+            console.error('Supabase save_chapters RPC error:', saveError);
+            return NextResponse.json({ error: `Failed to save generated chapters to database. ${saveError.message}` }, { status: 500 });
         }
-        console.log("Successfully saved chapters to database.");
+        console.log("Successfully saved chapters to database using save_chapters RPC.");
     } else {
         console.warn("No chapters were parsed from the AI response to save.");
         // Might indicate an issue with the AI's generation or the parsing logic.

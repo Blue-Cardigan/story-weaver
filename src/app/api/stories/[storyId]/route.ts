@@ -89,10 +89,10 @@ export async function PATCH(
             }
             updateData.title = payload.title.trim();
         }
-        // Note: Be cautious allowing structure_type changes via PATCH. It might be better to handle separately.
         if (payload.structure_type !== undefined) updateData.structure_type = payload.structure_type;
         if (payload.global_synopsis !== undefined) updateData.global_synopsis = payload.global_synopsis; // Allow null/empty
         if (payload.global_style_note !== undefined) updateData.global_style_note = payload.global_style_note; // Allow null/empty
+        if (payload.global_additional_notes !== undefined) updateData.global_additional_notes = payload.global_additional_notes; // Allow null/empty
         if (payload.target_length !== undefined) {
              if (payload.target_length === null || (typeof payload.target_length === 'number' && payload.target_length > 0)) {
                  updateData.target_length = payload.target_length === null ? null : Math.floor(payload.target_length);

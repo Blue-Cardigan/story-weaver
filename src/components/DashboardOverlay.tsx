@@ -8,7 +8,7 @@ import { v4 as uuidv4 } from 'uuid'; // For anon ID
 import CreateStoryModal from './CreateStoryModal'; // Import the modal
 import EditStoryModal from './EditStoryModal'; // Import EditStoryModal
 import type { StoryUpdatePayload } from './EditStoryModal'; // Import payload type
-import GenerateChaptersOverlay from './GenerateChaptersOverlay'; // Import the new component
+import ChapterPlannerOverlay from './ChapterPlannerOverlay'; // Import the new component
 
 const ANON_USER_ID_KEY = 'storyWeaverAnonUserId'; // Reuse the key from page.tsx
 
@@ -236,9 +236,31 @@ export default function DashboardOverlay({
 
   // --- Edit Modal Handlers ---
   const handleOpenEditModal = (story: Story) => {
-    setEditingStory(story);
-    setUpdateStoryError(null);
-    setIsEditModalOpen(true);
+    setUpdateStoryError(null); // Clear potential errors from previous attempts
+
+    if (story.structure_type === 'book') {
+        console.log("Dashboard: Editing book, opening chapter planner...");
+        // Open Chapter Planner Overlay for books
+        setCurrentStoryForChapterGen({
+            id: story.id,
+            title: story.title ?? '',
+            global_synopsis: story.global_synopsis,
+            global_style_note: story.global_style_note,
+            global_additional_notes: story.global_additional_notes,
+            target_length: story.target_length,
+        });
+        setIsChapterGenOverlayOpen(true);
+        // Ensure the basic edit modal is closed if it happened to be open
+        setIsEditModalOpen(false);
+        setEditingStory(null);
+    } else {
+        // Open the standard Edit Modal for non-book types
+        setEditingStory(story);
+        setIsEditModalOpen(true);
+        // Ensure the chapter planner is closed if it happened to be open
+        setIsChapterGenOverlayOpen(false);
+        setCurrentStoryForChapterGen(null);
+    }
   };
   const handleCloseEditModal = () => {
     setIsEditModalOpen(false);
@@ -282,10 +304,27 @@ export default function DashboardOverlay({
 
   const handleLoadStory = (story: Story) => {
     setActiveStoryId(story.id); // Set the active story ID in the parent (page.tsx)
-    // Load global synopsis and style note into the parent's state
-    setGlobalSynopsis(story.global_synopsis ?? null);
-    setGlobalStyleNote(story.global_style_note ?? null);
-    onClose(); // Close dashboard after loading
+
+    // If it's a book, open the chapter planner instead of closing directly
+    if (story.structure_type === 'book') {
+        console.log("Dashboard: Loading book, opening chapter planner...");
+        setCurrentStoryForChapterGen({
+            id: story.id,
+            title: story.title ?? '',
+            global_synopsis: story.global_synopsis,
+            global_style_note: story.global_style_note,
+            global_additional_notes: story.global_additional_notes,
+            target_length: story.target_length,
+        });
+        setIsChapterGenOverlayOpen(true);
+        // Keep DashboardOverlay open underneath
+    } else {
+        // For short stories, load context into parent and close dashboard
+        setGlobalSynopsis(story.global_synopsis ?? null);
+        setGlobalStyleNote(story.global_style_note ?? null);
+        // TODO: Maybe load additional notes too if needed in main editor?
+        onClose(); 
+    }
   }
 
   if (!isOpen) return null;
@@ -436,7 +475,7 @@ export default function DashboardOverlay({
       />
       {/* --- Render the Chapter Generation Overlay --- */}
       {isChapterGenOverlayOpen && currentStoryForChapterGen && (
-        <GenerateChaptersOverlay
+        <ChapterPlannerOverlay
             isOpen={isChapterGenOverlayOpen}
             onClose={() => {
               setIsChapterGenOverlayOpen(false);
