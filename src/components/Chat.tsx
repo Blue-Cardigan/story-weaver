@@ -237,7 +237,7 @@ export default function Chat({
       className={`fixed right-4 top-4 bottom-4 w-80 bg-white/90 backdrop-blur-md rounded-lg shadow-lg border border-gray-200/70 flex flex-col transition-all duration-300 ${isCollapsed ? 'w-12 h-12' : ''} ${className} z-50`}
     >
       <div className="p-3 border-b border-gray-200/70 flex justify-between items-center cursor-pointer" onClick={() => setIsCollapsed(!isCollapsed)}>
-        <h3 className={`font-medium text-gray-800 text-sm truncate pr-2 ${isCollapsed ? 'hidden' : ''}`}>Chat Assistant</h3>
+        <h3 className={`font-medium text-gray-800 text-sm truncate pr-2`}>Chat Assistant</h3>
         <div className="flex items-center space-x-2">
           {!isCollapsed && (
             <button
@@ -251,21 +251,6 @@ export default function Chat({
               </svg>
             </button>
           )}
-          <button
-            onClick={(e) => { e.stopPropagation(); setIsCollapsed(!isCollapsed); }}
-            className="text-gray-500 hover:text-gray-700"
-            aria-label={isCollapsed ? "Expand chat" : "Collapse chat"}
-          >
-            {isCollapsed ? (
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.586 7.707a1 1 0 00-1.414 1.414L10.586 11l-2.414 2.414a1 1 0 101.414 1.414L12 12.414l2.414 2.414a1 1 0 001.414-1.414L13.414 11l2.414-2.414a1 1 0 00-1.414-1.414L12 9.586 9.586 7.707z" clipRule="evenodd" />
-              </svg>
-            ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 000 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
-              </svg>
-            )}
-          </button>
         </div>
       </div>
 
