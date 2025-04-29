@@ -218,7 +218,7 @@ export default function ChapterPlannerOverlay({
         globalAdditionalNotes: storyDetails.global_additional_notes || undefined,
     };
 
-    let apiEndpoint = '/api/generate-chapters'; // Assuming we adapt this endpoint
+    const apiEndpoint = '/api/generate-chapters'; // Assuming we adapt this endpoint
 
     if (hasExistingChapters) {
         // Modification request
