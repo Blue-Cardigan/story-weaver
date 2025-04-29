@@ -8,7 +8,7 @@
 
     export async function POST(
         req: NextRequest,
-        { params }: { params: { storyId: string } }
+        params: any
     ) {
         const supabaseServer = createSupabaseServerClient();
         const { storyId } = params;
