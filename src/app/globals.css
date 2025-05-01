@@ -24,3 +24,9 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* TipTap Editor Paragraph Styling for Selector Dots */
+.ProseMirror p {
+  @apply pl-4 relative; /* Add padding-left and relative positioning for the dot */
+  margin-bottom: 0.5em; /* Add some space between paragraphs if needed */
+}
