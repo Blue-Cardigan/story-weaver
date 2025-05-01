@@ -95,71 +95,112 @@ export async function POST(request: Request) {
         parentId,
         refinementFeedback,
         userIdentifier, // For anonymous users
+        previousContentForAnon, // Added for anonymous refinement
     } = await request.json();
 
-    // Validation: Check for user OR identifier
+    // --- Top-Level Validation ---
+    // 1. User Identification
     if (!user && !userIdentifier) {
       return NextResponse.json({ error: 'Missing user identifier or authentication' }, { status: 401 });
     }
-
+    // 2. Basic Length
     if (!length || length <= 0) {
         return NextResponse.json({ error: 'Valid length is required' }, { status: 400 });
     }
 
-    let isBookMode = false; // Flag to check if we are in book mode
+    // --- Determine Request Type & Perform Specific Validation ---
+    let isBookMode = false;
     let chapterDetails: DbChapter | null = null;
-    let fetchedStoryData: Story | null = null; // Use a different name for the full fetch
+    let fetchedStoryData: Story | null = null;
 
-    // Mode-specific validation
-    if (storyId) {
-      // Need to know the story's structure type AND fetch all details
-       const { data: storyDetailsData, error: storyFetchError } = await supabase
-          .from('stories')
-          .select('structure_type, global_synopsis, global_style_note, global_additional_notes') // Fetch all needed fields here
-          .eq('id', storyId)
-          .maybeSingle();
+    const isRefinement = !!parentId || !!previousContentForAnon;
 
-       if (storyFetchError || !storyDetailsData) {
-           console.error(`Generate: Error fetching story ${storyId} details or access denied:`, storyFetchError);
-            return NextResponse.json({ error: 'Failed to fetch story details or access denied' }, { status: 403 });
-       }
-       fetchedStoryData = storyDetailsData as Story; // Assign to the outer scope variable
-       isBookMode = fetchedStoryData.structure_type === 'book';
-
-      if (isBookMode) {
-          // Book mode requires a chapterId unless refining
-          if (!chapterId && !parentId) {
-               return NextResponse.json({ error: 'Missing chapterId for new book part generation' }, { status: 400 });
-          }
-          // Fetch chapter details if chapterId is provided
-          if (chapterId) {
-              chapterDetails = await fetchChapterDetails(chapterId, supabase);
-              if (!chapterDetails) {
-                   return NextResponse.json({ error: `Chapter ${chapterId} not found or access denied` }, { status: 404 });
-              }
-          }
-      }
-        // Story mode: partInstructions are key, styleNote can be fallback
-        if (!partInstructions && !refinementFeedback) { // Need instructions unless refining
-             return NextResponse.json({ error: 'Missing partInstructions for new story part' }, { status: 400 });
+    if (isRefinement) {
+        // --- Refinement Validation ---
+        if (!refinementFeedback) {
+            return NextResponse.json({ error: 'Missing refinementFeedback for refinement request' }, { status: 400 });
         }
-        if (!styleNote && !globalStyleNote) {
+        // If anonymous refinement, ensure previous content was provided
+        if (!parentId && typeof previousContentForAnon !== 'string') {
+            return NextResponse.json({ error: 'Missing previousContentForAnon for anonymous refinement' }, { status: 400 });
+        }
+        // If refining within a story, fetch story/chapter details for context
+        if (storyId) {
+            const { data: storyData, error: storyError } = await supabase
+                .from('stories')
+                .select('structure_type, global_synopsis, global_style_note, global_additional_notes')
+                .eq('id', storyId)
+                .maybeSingle();
+            if (storyError || !storyData) {
+                 console.error(`Refine: Error fetching story ${storyId} details or access denied:`, storyError);
+                 return NextResponse.json({ error: 'Failed to fetch story details for refinement context or access denied' }, { status: 403 });
+            }
+            fetchedStoryData = storyData as Story;
+            isBookMode = fetchedStoryData.structure_type === 'book';
+
+            if (isBookMode && chapterId) { // Chapter context is optional but useful for refinement
+                 chapterDetails = await fetchChapterDetails(chapterId, supabase);
+                 if (!chapterDetails) {
+                     console.warn(`Refine: Chapter ${chapterId} not found or access denied during refinement context fetch.`);
+                     // Don't fail, just proceed without chapter context
+                 }
+            }
+        } else {
+            // Standalone refinement: styleNote is needed for context
+            if (!styleNote) {
+                 return NextResponse.json({ error: 'Missing styleNote for standalone refinement context' }, { status: 400 });
+            }
+        }
+
+    } else if (storyId) {
+        // --- Story Part Generation Validation ---
+        const { data: storyData, error: storyError } = await supabase
+            .from('stories')
+            .select('structure_type, global_synopsis, global_style_note, global_additional_notes')
+            .eq('id', storyId)
+            .maybeSingle();
+        if (storyError || !storyData) {
+            console.error(`Generate: Error fetching story ${storyId} details or access denied:`, storyError);
+            return NextResponse.json({ error: 'Failed to fetch story details or access denied' }, { status: 403 });
+        }
+        fetchedStoryData = storyData as Story;
+        isBookMode = fetchedStoryData.structure_type === 'book';
+
+        if (isBookMode) {
+            // Book mode requires chapterId for new parts
+            if (!chapterId) {
+                 return NextResponse.json({ error: 'Missing chapterId for new book part generation' }, { status: 400 });
+            }
+            chapterDetails = await fetchChapterDetails(chapterId, supabase);
+            if (!chapterDetails) {
+                 return NextResponse.json({ error: `Chapter ${chapterId} not found or access denied` }, { status: 404 });
+            }
+        }
+        // All story part generation needs instructions and style context
+        if (!partInstructions) {
+            return NextResponse.json({ error: 'Missing partInstructions for new story part' }, { status: 400 });
+        }
+        if (!styleNote && !fetchedStoryData.global_style_note) {
             return NextResponse.json({ error: 'Missing styleNote or globalStyleNote for story part' }, { status: 400 });
         }
-    } else if (!parentId) {
-        // Standalone initial generation: synopsis and styleNote needed
+
+    } else {
+        // --- Standalone Initial Generation Validation ---
         if (!synopsis || !styleNote) {
             return NextResponse.json({ error: 'Missing synopsis or styleNote for standalone generation' }, { status: 400 });
         }
-    } else {
-         // Standalone refinement: refinementFeedback needed
-         if (!refinementFeedback || !styleNote) {
-             return NextResponse.json({ error: 'Missing refinementFeedback or styleNote for standalone refinement' }, { status: 400 });
-         }
     }
 
-    // Determine effective style: Prioritize chapter, then global, then standalone
+    // --- Determine Effective Style Note (used in all cases) ---
+    // Prioritize chapter, then global, then specific
     const effectiveStyleNote = chapterDetails?.style_notes || fetchedStoryData?.global_style_note || styleNote;
+    if (!effectiveStyleNote && !isRefinement) {
+        // Only strictly required for non-refinement if not covered by other checks, but good safeguard
+        // For refinement, style might be derived from parent, but let's ensure *some* style is usually present
+        // Revisit if style note is truly optional in some refinement cases.
+        console.warn("No effective style note could be determined.");
+        // Return NextResponse.json({ error: 'Could not determine style note for generation' }, { status: 400 });
+    }
 
     // Create a local config for this request based on the base config
     const requestConfig: CustomGenerationConfig = { ...baseGenerationConfig };
@@ -172,17 +213,39 @@ export async function POST(request: Request) {
     let currentPromptText = '';
     let basePromptForDb = ''; // Store the core instruction
 
-    if (parentId) {
+    if (parentId || previousContentForAnon) { // Adjusted condition: Refinement if parentId or previousContentForAnon exists
         // Refinement Logic (applies to both story and standalone)
         if (!refinementFeedback) {
             return NextResponse.json({ error: 'Missing refinementFeedback for refinement request' }, { status: 400 });
         }
 
+        let previousContent: string | null = null;
+        if (parentId) {
+            // Logged-in user: Fetch parent content
         const parentGen = await fetchParentGeneration(parentId, supabase);
         if (parentGen?.generated_story) {
-            historyContents.push({ role: "model", parts: [{ text: parentGen.generated_story }] });
+                previousContent = parentGen.generated_story;
+            } else {
+                 console.warn(`Could not fetch parent ${parentId} or it lacked content for refinement history.`);
+                 // Return error? For now, we proceed without history, but this might be confusing.
+                 // return NextResponse.json({ error: `Parent generation ${parentId} not found or has no content.` }, { status: 404 });
+            }
         } else {
-             console.warn(`Could not fetch parent ${parentId} or it lacked content for refinement history.`);
+            // Anonymous user: Use provided content
+            if (typeof previousContentForAnon === 'string' && previousContentForAnon.trim()) {
+                 previousContent = previousContentForAnon;
+            } else {
+                console.warn(`Anonymous refinement requested but no previousContentForAnon provided or it was empty.`);
+                // Return error as refinement needs previous content
+                return NextResponse.json({ error: 'Previous content is required for anonymous refinement.' }, { status: 400 });
+            }
+        }
+
+        if (previousContent) {
+            historyContents.push({ role: "model", parts: [{ text: previousContent }] });
+        } else {
+             // This case should now be handled by the error checks above, but as a failsafe:
+             return NextResponse.json({ error: 'Failed to retrieve or provide previous content for refinement.' }, { status: 400 });
         }
 
         basePromptForDb = refinementFeedback; // The feedback is the core instruction
@@ -343,17 +406,19 @@ export async function POST(request: Request) {
     // --- Prepare data for Supabase insert ---
     const generationData: Partial<NewGenerationPayload> = {
       story_id: storyId || null, // Include storyId if provided
-      synopsis: parentId ? null : (storyId ? null : synopsis), // Store synopsis only for standalone initial
-      part_instructions: storyId && !parentId ? partInstructions : null, // Store instructions for new story parts
-      global_context_synopsis: storyId ? globalSynopsis : null, // Store context used
-      global_context_style: storyId ? globalStyleNote : null, // Store context used
-      style_note: styleNote, // Always store the specific style note used for this generation
+      // Store synopsis/instructions only for *initial* generations (not refinements)
+      synopsis: !parentId && !previousContentForAnon && !storyId ? synopsis : null,
+      part_instructions: !parentId && !previousContentForAnon && storyId && !chapterId ? partInstructions : null, // Only for initial non-book part
+      chapter_id: chapterId || null, // Always store chapterId if provided
+      global_context_synopsis: storyId ? (fetchedStoryData?.global_synopsis || null) : null, // Store context used
+      global_context_style: storyId ? (fetchedStoryData?.global_style_note || null) : null, // Store context used
+      style_note: effectiveStyleNote || null, // Store the effective style note used
       requested_length: parseInt(length, 10),
       use_web_search: !!useWebSearch,
       prompt: basePromptForDb, // Store the core user instruction (synopsis/instructions/feedback)
       generated_story: generatedText,
-      parent_generation_id: parentId,
-      iteration_feedback: refinementFeedback, // Store refinement feedback if provided
+      parent_generation_id: parentId || null, // Only set if logged in refinement
+      iteration_feedback: refinementFeedback || null, // Store refinement feedback if provided
       // Save length context provided to the model
       context_target_length: typeof storyTargetLength === 'number' ? storyTargetLength : null,
       context_current_length: typeof currentStoryLength === 'number' ? currentStoryLength : null,
@@ -367,7 +432,10 @@ export async function POST(request: Request) {
       generationData.user_identifier = userIdentifier;
     }
 
-    // --- Save to Supabase ---
+    // --- Save to Supabase ONLY if logged in, otherwise just return the generation ---
+    let savedGenerationId: string | null = null;
+
+    if (user) {
     const { data: insertData, error: supabaseError } = await supabase
       .from('story_generations')
       .insert(generationData as NewGenerationPayload) // Use correct type
@@ -380,11 +448,17 @@ export async function POST(request: Request) {
       console.error('Supabase insert error details:', JSON.stringify(supabaseError, null, 2)); 
       return NextResponse.json({ error: `Failed to save generation record. ${supabaseError?.message || 'Unknown Supabase error'}` }, { status: 500 });
     }
+        savedGenerationId = insertData.id;
+    } else {
+        console.log("Anonymous user generation - skipping database save.");
+        // Optionally: Add logic here if the server *needed* to do something
+        // specific for anonymous users besides just returning the content.
+    }
 
-    // Return story, ID, and grounding metadata
+    // Return story, ID (if saved), and grounding metadata
     return NextResponse.json({ 
         story: generatedText, 
-        generationId: insertData.id,
+        generationId: savedGenerationId, // Will be null for anonymous users
         groundingMetadata: groundingMetadata // Include metadata in response
     });
 

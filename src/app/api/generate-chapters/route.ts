@@ -14,9 +14,11 @@ type ChapterOutline = {
 // Define the type for the request body more precisely
 interface GenerateChaptersRequest {
     storyId: string;
-    numChapters: number;
+    numChapters?: number; // Make optional, only required for initial generation
     targetBookLength?: number | null;
-    generationNotes?: string;
+    generationNotes?: string; // For initial generation
+    modificationInstructions?: string; // For modifications
+    existingChapters?: ChapterOutline[]; // For modifications
     globalSynopsis?: string | null;
     globalStyleNote?: string | null;
     globalAdditionalNotes?: string | null;
@@ -52,6 +54,8 @@ export async function POST(request: Request) {
         numChapters,
         targetBookLength,
         generationNotes,
+        modificationInstructions,
+        existingChapters,
         globalSynopsis,
         globalStyleNote,
         globalAdditionalNotes,
@@ -68,8 +72,11 @@ export async function POST(request: Request) {
     if (!storyId) {
       return NextResponse.json({ error: 'Missing storyId' }, { status: 400 });
     }
-    if (!numChapters || numChapters <= 0 || numChapters > 150) { // Add upper limit
-      return NextResponse.json({ error: 'Invalid number of chapters (must be 1-150)' }, { status: 400 });
+    // Validation depends on whether it's generation or modification
+    const isModification = existingChapters && existingChapters.length > 0;
+
+    if (!isModification && (!numChapters || numChapters <= 0 || numChapters > 150)) { // Required only for initial generation
+      return NextResponse.json({ error: 'Invalid number of chapters for initial generation (must be 1-150)' }, { status: 400 });
     }
     // Story ID validation requires checking ownership or identifier match
     const { data: storyData, error: storyError } = await supabase
@@ -100,42 +107,93 @@ export async function POST(request: Request) {
 
 
     // --- Construct Prompt for AI ---
-    let prompt = `You are an expert story planner. Based on the following overall story details, generate around ${numChapters} chapter outlines.`;
+    let prompt = '';
+    const chapterStructureDescription = `Each chapter object must have the following keys:\n- \"title\": A compelling title for the chapter (string).\n- \"synopsis\": A detailed summary, describing the key events, focus, character development, and thematic elements (string).\n- \"style_notes\": (Optional) Specific style notes for this chapter (string).\n- \"additional_notes\": (Optional) Further relevant notes for this chapter (string).`;
 
-    if (targetBookLength && targetBookLength > 0) {
-        prompt += ` The entire book is intended to be approximately ${targetBookLength.toLocaleString()} words long.`;
-    }
-
-    prompt += "\\n\\nOverall Story Synopsis:\\n" + (globalSynopsis || "Not provided.") + "\\n";
-    prompt += "\\nOverall Story Style Note:\\n" + (globalStyleNote || "Not specified.") + "\\n";
+    let globalContext = '\n\n--- Overall Story Context ---\n';
+    globalContext += `Overall Story Synopsis:\n${globalSynopsis || "Not provided."}\n\n`;
+    globalContext += `Overall Story Style Note:\n${globalStyleNote || "Not specified."}\n`;
     if (globalAdditionalNotes) {
-        prompt += "\\nAdditional Notes:\\n" + globalAdditionalNotes + "\\n";
+        globalContext += `\nAdditional Notes:\n${globalAdditionalNotes}\n`;
     }
-    if (generationNotes) {
-        prompt += "\\nSpecific Instructions for Chapter Planning:\\n" + generationNotes + "\\n";
+    globalContext += '--- End Overall Story Context ---\n';
+
+    if (isModification) {
+        // --- Modification Prompt ---
+        console.log("Constructing modification prompt...");
+        prompt = 'You are an expert story planner tasked with modifying an existing chapter plan based on specific instructions.\n';
+        prompt += globalContext;
+
+        prompt += '\n--- Current Chapter Plan ---\n';
+        prompt += `The current plan has ${existingChapters.length} chapters:\n`;
+        prompt += existingChapters.map((ch, index) => 
+            `\nChapter ${index + 1}:\n` +
+            `  Title: ${ch.title || 'Untitled'}\n` +
+            `  Synopsis: ${ch.synopsis || 'No synopsis.'}\n` +
+            `  Style Notes: ${ch.style_notes || 'None'}\n` +
+            `  Additional Notes: ${ch.additional_notes || 'None'}\n`
+        ).join('\n');
+        prompt += '\n--- End Current Chapter Plan ---\n';
+
+        prompt += '\n--- Modification Instructions ---\n';
+        prompt += modificationInstructions || "No specific instructions provided, but please review and refine the plan based on the overall context.";
+        prompt += '\n--- End Modification Instructions ---\n';
+
+        if (numChapters) {
+            prompt += `\nThe user suggested a target of around ${numChapters} chapters for the final plan. Use this as a guideline when applying the modifications.\n`;
+        }
+
+        prompt += '\nYour task is to apply the modification instructions to the current chapter plan. You might need to merge chapters, split chapters, add new ones, delete existing ones, rewrite synopses, adjust titles, or reorder chapters based on the instructions.\n';
+        prompt += '\nPlease provide the *complete, modified* chapter plan as your output. The output MUST be STRICTLY a JSON array where each object represents a chapter.\n';
+        prompt += chapterStructureDescription;
+        prompt += '\n\nExample format for the output (ensure your entire response is just the JSON array):\n';
+        prompt += '[\n';
+        prompt += '  {\n';
+        prompt += '    "title": "Modified Chapter 1 Title",\n';
+        prompt += '    "synopsis": "Updated synopsis for the first chapter incorporating requested changes...",\n';
+        prompt += '    "style_notes": "Any specific style notes...",\n';
+        prompt += '    "additional_notes": "Any additional notes..."\n';
+        prompt += '  },\n';
+        prompt += '  { ... more modified chapters ... }\n';
+        prompt += ']';
+
+    } else {
+        // --- Initial Generation Prompt ---
+        console.log("Constructing initial generation prompt...");
+        prompt = `You are an expert story planner. Based on the following overall story details, generate approximately ${numChapters} chapter outlines.`;
+
+        if (targetBookLength && targetBookLength > 0) {
+            prompt += ` The entire book is intended to be approximately ${targetBookLength.toLocaleString()} words long.`;
+        }
+
+        prompt += globalContext; // Re-use the built globalContext string
+
+        if (generationNotes) {
+            prompt += "\n\n--- Specific Instructions for Chapter Planning ---\n" + generationNotes + "\n--- End Specific Instructions ---";
+        }
+
+        prompt += `\n\nPlease provide the output STRICTLY as a JSON array where each object represents a chapter.\n`;
+        prompt += chapterStructureDescription;
+        prompt += `\n\nExample format (ensure your entire response is just the JSON array):\n`; // Still use template literal here where it's simpler
+        prompt += '[\n';
+        prompt += '  {\n';
+        prompt += '    "title": "Whispers in the Dust",\n';
+        prompt += '    "synopsis": "The chapter opens establishing the harsh, arid environment... Key events: ... Character development: ... Thematic elements: ...",\n';
+        prompt += '    "style_notes": "Emphasize desolate atmosphere... Use internal monologue...",\n';
+        prompt += '    "additional_notes": "Ensure data cylinder feels ancient... Foreshadow factions..."\n';
+        prompt += '  },\n';
+        prompt += '  {\n';
+        prompt += '    "title": "Shadows in the Market",\n';
+        prompt += '    "synopsis": "Elara travels to the nearest settlement... Key events: ... Character development: ... Thematic elements: ...",\n';
+        prompt += '    "style_notes": "Create unease... Use dialogue...",\n';
+        prompt += '    "additional_notes": "Establish specific dangers... Kael\'s reluctance..."\n'; // Escaped Kael's
+        prompt += '  }\n';
+        prompt += '  // { ... more chapters following this detailed format ... }\n';
+        prompt += ']';
     }
-
-    prompt += `\\n\\nPlease provide the output STRICTLY as a JSON array where each object represents a chapter and has the following keys:
-- "title": A compelling title for the chapter. (string).
-- "synopsis": A detailed summary, outlining the key events, focus of the chapter, and any other relevant details including thematic elements, character development, and any other relevant details (string).
-- "style_notes": (Optional) Specific style notes for this chapter, if any (string or null).
-- "additional_notes": (Optional) Any other relevant notes for this chapter (string or null).
-
-Example format:
-[
-  {
-    "title": "The Unexpected Visitor",
-    "synopsis": "Introduce the main character and their ordinary life. An unexpected event disrupts the status quo.",
-    "style_notes": "Establish a calm tone initially, shifting to intrigue.",
-    "additional_notes": "Hint at the larger conflict to come."
-  },
-  { ... more chapters ... }
-]
-
-Generate exactly ${numChapters} chapter objects in the array.`;
 
     // --- Call Gemini API using Streaming ---
-    console.log("Sending prompt to Gemini for chapter generation (streaming)...");
+    console.log(`Sending prompt to Gemini for chapter ${isModification ? 'modification' : 'generation'} (streaming)...`);
 
     const contents: Content[] = [{ role: "user", parts: [{ text: prompt }] }];
 
@@ -247,12 +305,17 @@ Generate exactly ${numChapters} chapter objects in the array.`;
         return NextResponse.json({ error: "AI did not generate any valid chapter outlines." }, { status: 500 });
     }
 
+    // --- Return Generated/Modified Chapters ---
+     if (parsedChapters === null || parsedChapters === undefined) { // Check if parsing failed completely
+       console.error("Error: parsedChapters is unexpectedly null or undefined before returning.");
+       return NextResponse.json({ error: "Failed to process chapter data internally after AI response." }, { status: 500 });
+     }
 
-    // --- Return Generated Chapters ---
+     // If parsedChapters is an empty array (potentially valid), return it as such.
      // Add chapter_number to the response payload for frontend display
      const chaptersWithNumbers = parsedChapters.map((chapter, index) => ({
         ...chapter,
-        chapter_number: index + 1,
+        chapter_number: index + 1, // Ensure chapter number is added/updated
      }));
 
     return NextResponse.json({ chapters: chaptersWithNumbers });

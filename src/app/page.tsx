@@ -5,27 +5,19 @@ import { createSupabaseBrowserClient } from '@/lib/supabaseBrowserClient';
 import type { Database } from '@/types/supabase';
 import { User } from '@supabase/supabase-js';
 import EditableText from '@/components/EditableText';
-import Chat from '@/components/Chat';
 import AuthButton from '@/components/AuthButton';
 import AuthModal from '@/components/AuthModal';
 import DashboardOverlay from '@/components/DashboardOverlay';
 import EditChapterModal from '@/components/EditChapterModal';
 import type { ChapterUpdatePayload } from '@/components/EditChapterModal';
-import * as Diff from 'diff';
 import { v4 as uuidv4 } from 'uuid';
+import InlineChat from '@/components/InlineChat';
+import type { EditProposal, ContextParagraphData } from '@/types/chat';
 
 // Define Story type based on DB schema
 type Story = Database['public']['Tables']['stories']['Row'];
 type StoryGeneration = Database['public']['Tables']['story_generations']['Row'];
 type DbChapter = Database['public']['Tables']['chapters']['Row'];
-
-interface EditProposal {
-  type: 'replace' | 'insert' | 'delete' | 'clarification' | 'none';
-  explanation: string;
-  startIndex?: number;
-  endIndex?: number;
-  text?: string;
-}
 
 const ANON_USER_ID_KEY = 'storyWeaverAnonUserId';
 
@@ -63,15 +55,12 @@ export default function Home() {
   const [currentGenerationId, setCurrentGenerationId] = useState<string | null>(null);
   const [isAccepting, setIsAccepting] = useState(false);
   const [acceptStatus, setAcceptStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  const [refinementFeedback, setRefinementFeedback] = useState('');
-  const [isRefining, setIsRefining] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isProcessingChange, setIsProcessingChange] = useState(false);
-  const [isChatCollapsed, setIsChatCollapsed] = useState(false);
-  const [diffForEditor, setDiffForEditor] = useState<Diff.Change[] | null>(null);
+  const [proposalForDiff, setProposalForDiff] = useState<EditProposal | null>(null);
   const [diffStartIndex, setDiffStartIndex] = useState<number | null>(null);
   const [diffEndIndex, setDiffEndIndex] = useState<number | null>(null);
   const [storyPartsSavingStates, setStoryPartsSavingStates] = useState<Record<string, { isLoading: boolean; error: string | null; success: boolean }>>({});
+  const [selectedContextData, setSelectedContextData] = useState<ContextParagraphData[]>([]);
 
   // --- State for Editing Chapters ---
   const [isEditChapterModalOpen, setIsEditChapterModalOpen] = useState(false);
@@ -232,8 +221,7 @@ export default function Home() {
         setCurrentGenerationId(null);
         setError(null);
         setAcceptStatus(null);
-        setRefinementFeedback('');
-        setDiffForEditor(null);
+        setProposalForDiff(null);
         setDiffStartIndex(null);
         setDiffEndIndex(null);
         setFetchedChapters([]);
@@ -259,6 +247,10 @@ export default function Home() {
       setSelectedChapterId(null);
       setIsLoadingChapters(false);
       setChaptersError(null);
+      setAcceptStatus(null);
+      setProposalForDiff(null);
+      setDiffStartIndex(null);
+      setDiffEndIndex(null);
     }
   }, [activeStoryId, effectiveIdentifier]);
 
@@ -277,7 +269,6 @@ export default function Home() {
     setGeneratedStory(null);
     setCurrentGenerationId(null);
     setAcceptStatus(null);
-    setRefinementFeedback('');
 
     if (activeStoryId && !activeStoryDetails) {
         setError('Story details are still loading. Please wait.');
@@ -364,11 +355,23 @@ export default function Home() {
         throw new Error(result.error || `API request failed with status ${response.status}`);
       }
 
-      if (result.story && result.generationId) {
+      if (result.story) {
         setGeneratedStory(result.story);
+        if (result.generationId) {
         setCurrentGenerationId(result.generationId);
+          console.log(`Generated and saved story part with ID: ${result.generationId}`);
       } else {
-        throw new Error('Invalid response format from API.');
+          setCurrentGenerationId(null);
+          try {
+             localStorage.setItem('latestAnonStoryGeneration', result.story);
+             console.log('Generated story part for anonymous user, saved to localStorage.');
+          } catch (storageError) {
+             console.error("Error saving anonymous story to localStorage:", storageError);
+             setError("Could not save the generated story locally. LocalStorage might be full or disabled.");
+          }
+        }
+      } else {
+        throw new Error('Invalid response format from API: Missing story content.');
       }
 
     } catch (err) {
@@ -417,100 +420,6 @@ export default function Home() {
     }
   };
 
-  const handleRefine = async () => {
-    if (!currentGenerationId || !refinementFeedback.trim() || isRefining || isAccepting || acceptStatus?.type === 'success' || !effectiveIdentifier || !generatedStory) {
-        return;
-    }
-
-    setIsRefining(true);
-    setError(null);
-    setAcceptStatus(null);
-
-    try {
-         console.log(`Saving potential edits for ${currentGenerationId} before refining...`);
-         const saveResponse = await fetch(`/api/generations/${currentGenerationId}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ generated_story: generatedStory }),
-         });
-         if (!saveResponse.ok) {
-            const saveResult = await saveResponse.json();
-            throw new Error(saveResult.error || `Failed to save edits before refinement (status ${saveResponse.status})`);
-         }
-         console.log(`Edits for ${currentGenerationId} saved successfully.`);
-    } catch (err) {
-        console.error("Error saving edits before refinement:", err);
-        setError(err instanceof Error ? `Error saving edits: ${err.message}` : 'An unknown error occurred while saving edits before refinement.');
-        setIsRefining(false);
-        return;
-    }
-
-    const payload: any = {
-        length: length,
-        useWebSearch: useWebSearch,
-        parentId: currentGenerationId,
-        refinementFeedback: refinementFeedback,
-    };
-
-    if (activeStoryId && activeStoryDetails) {
-        payload.storyId = activeStoryId;
-        payload.partInstructions = partInstructions;
-        payload.globalSynopsis = activeStoryDetails.global_synopsis;
-        payload.globalStyleNote = activeStoryDetails.global_style_note;
-    } else {
-        payload.synopsis = synopsis;
-        payload.styleNote = styleNote;
-    }
-    if (!user && anonUserIdentifier) {
-      payload.userIdentifier = anonUserIdentifier;
-    }
-
-    try {
-      const response = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || `API request failed during refinement`);
-
-      if (result.story && result.generationId) {
-        setGeneratedStory(result.story);
-        setCurrentGenerationId(result.generationId);
-        setRefinementFeedback('');
-      } else {
-        throw new Error('Invalid response format from refinement API.');
-      }
-
-    } catch (err) {
-        console.error('Refinement request failed:', err);
-        setError(err instanceof Error ? err.message : 'An unknown error occurred during refinement.');
-    } finally {
-      setIsRefining(false);
-    }
-  };
-
-  const handleChangeRequest = async (request: string, selections: string[]) => {
-    if (!currentGenerationId || !generatedStory) return;
-    
-    setIsProcessingChange(true);
-    setError(null);
-    
-    try {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      const updatedStory = `${generatedStory}\n\n[Change Request: ${request}]\n[Selected Text: ${selections.join(', ')}]`;
-      setGeneratedStory(updatedStory);
-      
-    } catch (err) {
-      console.error('Change request failed:', err);
-      setError(err instanceof Error ? err.message : 'An unknown error occurred while processing your change request.');
-    } finally {
-      setIsProcessingChange(false);
-    }
-  };
-
   const handleAcceptProposal = (proposal: EditProposal) => {
     setGeneratedStory(prevStory => {
         if (!prevStory) return "";
@@ -553,36 +462,38 @@ export default function Home() {
         }
 
     });
-    setDiffForEditor(null);
+    setProposalForDiff(null);
     setDiffStartIndex(null);
     setDiffEndIndex(null);
   };
 
   const handleReceiveProposal = (proposal: EditProposal) => {
-    if (proposal.type === 'replace' && generatedStory && proposal.startIndex !== undefined && proposal.endIndex !== undefined && proposal.text !== undefined) {
-      const originalTextSegment = generatedStory.substring(
-        proposal.startIndex,
-        proposal.endIndex
-      );
-      const changes = Diff.diffChars(originalTextSegment, proposal.text);
-      setDiffForEditor(changes);
-      setDiffStartIndex(proposal.startIndex);
-      setDiffEndIndex(proposal.endIndex);
+    if ((proposal.type === 'replace' || proposal.type === 'insert' || proposal.type === 'delete') && generatedStory && proposal.startIndex !== undefined) {
+        if ((proposal.type === 'replace' || proposal.type === 'delete') && proposal.endIndex === undefined) {
+            console.warn("Received replace/delete proposal without endIndex:", proposal);
+            setProposalForDiff(null);
+            setDiffStartIndex(null);
+            setDiffEndIndex(null);
+            return;
+        }
+        setProposalForDiff(proposal);
+        setDiffStartIndex(proposal.startIndex);
+        setDiffEndIndex(proposal.endIndex ?? proposal.startIndex);
     } else {
-      setDiffForEditor(null);
-      setDiffStartIndex(null);
-      setDiffEndIndex(null);
+       setProposalForDiff(null);
+       setDiffStartIndex(null);
+       setDiffEndIndex(null);
     }
   };
 
   const handleRejectProposal = () => {
-    setDiffForEditor(null);
+    setProposalForDiff(null);
     setDiffStartIndex(null);
     setDiffEndIndex(null);
   };
 
   const handleNewChat = () => {
-    setDiffForEditor(null);
+    setProposalForDiff(null);
     setDiffStartIndex(null);
     setDiffEndIndex(null);
   };
@@ -599,7 +510,9 @@ export default function Home() {
       setCurrentGenerationId(null);
       setError(null);
       setAcceptStatus(null);
-      setRefinementFeedback('');
+      setProposalForDiff(null);
+      setDiffStartIndex(null);
+      setDiffEndIndex(null);
   };
 
   const handleStoryPartChange = (partId: string, newContent: string) => {
@@ -768,9 +681,20 @@ export default function Home() {
 
   }, [currentStoryParts, fetchedChapters, activeStoryDetails]);
 
+  // Handler for context selection changes from EditableText
+  const handleContextSelection = useCallback((data: ContextParagraphData[]) => {
+      console.log("Selected context paragraph data:", data);
+      setSelectedContextData(data);
+  }, []);
+
+  // Callback to clear context selection (passed to InlineChat)
+  const handleClearContextSelection = useCallback(() => {
+    setSelectedContextData([]);
+  }, []);
+
   return (
     <main className={`flex min-h-screen flex-col justify-start p-12 md:p-24 bg-gradient-to-br from-gray-50 via-stone-50 to-slate-100 text-gray-800 font-sans transition-all duration-300`}>
-       <div className={`fixed top-0 left-0 right-0 z-20 flex items-center justify-between p-4 md:p-6 transition-all duration-300 ${!isChatCollapsed ? 'pr-[22rem]' : 'pr-4'} bg-gradient-to-b from-white/80 via-white/50 to-transparent`}>
+       <div className={`fixed top-0 left-0 right-0 z-20 flex items-center justify-between p-4 md:p-6 transition-all duration-300 bg-gradient-to-b from-white/80 via-white/50 to-transparent`}>
          <div className="flex items-center space-x-4">
             <h1 className="text-2xl md:text-3xl font-semibold text-transparent bg-clip-text bg-gradient-to-r from-slate-600 to-gray-800 py-1">
               Story Weaver
@@ -801,7 +725,7 @@ export default function Home() {
          </div>
        </div>
 
-      <div className={`w-full max-w-3xl bg-white/70 backdrop-blur-md rounded-xl shadow-lg p-8 border border-gray-200/50 mb-8 transition-all duration-300 ${!isChatCollapsed ? 'mr-[22rem]' : 'mr-0'} mt-20`}>
+      <div className={`w-full max-w-3xl bg-white/70 backdrop-blur-md rounded-xl shadow-lg p-8 border border-gray-200/50 mb-8 transition-all duration-300 mt-20`}>
         {isLoadingStoryDetails && (
             <p className="text-center text-slate-500 py-4">Loading story details...</p>
          )}
@@ -992,10 +916,10 @@ export default function Home() {
 
                 <button
                   type="submit"
-                  disabled={isLoading || isAccepting || isRefining || isLoadingStoryDetails || isLoadingChapters ||
+                  disabled={isLoading || isAccepting || isLoadingStoryDetails || isLoadingChapters ||
                       (activeStoryDetails?.structure_type === 'book' && !selectedChapterId && currentStoryParts.some(p => p.chapter_id))}
                   className={`inline-flex justify-center py-2 px-6 border border-transparent shadow-sm text-sm font-medium rounded-md text-white transition duration-150 ease-in-out ${
-                      (isLoading || isAccepting || isRefining || isLoadingStoryDetails || isLoadingChapters || (activeStoryDetails?.structure_type === 'book' && !selectedChapterId && currentStoryParts.some(p => p.chapter_id)))
+                      (isLoading || isAccepting || isLoadingStoryDetails || isLoadingChapters || (activeStoryDetails?.structure_type === 'book' && !selectedChapterId && currentStoryParts.some(p => p.chapter_id)))
                       ? 'bg-gray-400 cursor-not-allowed'
                       : 'bg-gradient-to-r from-slate-600 to-gray-800 hover:from-slate-700 hover:to-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500'
                   }`}
@@ -1043,23 +967,11 @@ export default function Home() {
               onChange={setGeneratedStory}
               placeholder="Your story will appear here..."
               className="bg-white/80 rounded-md"
-              diffToDisplay={diffForEditor}
+              proposalForDiff={proposalForDiff}
               diffStartIndex={diffStartIndex}
               diffEndIndex={diffEndIndex}
+              onContextSelectionChange={handleContextSelection}
             />
-
-            {currentGenerationId && acceptStatus?.type !== 'success' && (
-                <div>
-                   <label htmlFor="refinementFeedback" className="block text-sm font-medium text-gray-700 mb-1">Refinement Instructions:</label>
-                   <textarea
-                       id="refinementFeedback" name="refinementFeedback" rows={2}
-                       className="w-full p-2 border border-gray-300/70 rounded-md shadow-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white/90 placeholder-gray-400 transition duration-150 ease-in-out disabled:opacity-70 disabled:bg-gray-50"
-                       placeholder="e.g., Make the tone more optimistic, add more dialogue..."
-                       value={refinementFeedback} onChange={(e) => setRefinementFeedback(e.target.value)}
-                       disabled={isRefining || isAccepting}
-                   />
-                </div>
-            )}
 
             <div className="pt-4 border-t border-slate-200 flex flex-col sm:flex-row justify-end items-center space-y-2 sm:space-y-0 sm:space-x-3">
                 {acceptStatus && (
@@ -1070,7 +982,7 @@ export default function Home() {
               <div className="flex space-x-3 w-full sm:w-auto justify-end">
                 <button 
                   onClick={handleAccept}
-                  disabled={!currentGenerationId || isAccepting || acceptStatus?.type === 'success' || isRefining}
+                  disabled={!currentGenerationId || isAccepting || acceptStatus?.type === 'success'}
                   className={`py-1 px-4 border rounded text-sm font-medium transition duration-150 ease-in-out 
                               ${isAccepting ? 'bg-gray-200 text-gray-500 cursor-wait' : 
                                acceptStatus?.type === 'success' ? 'bg-green-100 text-green-700 border-green-300 cursor-not-allowed' : 
@@ -1079,19 +991,25 @@ export default function Home() {
                 >
                   {isAccepting ? 'Accepting...' : acceptStatus?.type === 'success' ? 'Accepted' : 'Accept'}
                 </button>
-                
-                <button 
-                  onClick={handleRefine}
-                  disabled={!currentGenerationId || !refinementFeedback.trim() || isRefining || isAccepting || acceptStatus?.type === 'success' || !effectiveIdentifier} 
-                  className={`py-1 px-4 border rounded text-sm font-medium transition duration-150 ease-in-out 
-                              ${isRefining ? 'bg-gray-200 text-gray-500 cursor-wait' : 
-                               'border-blue-600 text-blue-700 hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed'}
-                            `}
-                >
-                  {isRefining ? 'Refining...' : 'Refine'} 
-                </button>
               </div>
             </div> 
+
+            <InlineChat 
+              currentStory={generatedStory}
+              currentGenerationId={currentGenerationId}
+              onAcceptProposal={handleAcceptProposal}
+              onRejectProposal={handleRejectProposal}
+              onReceiveProposal={handleReceiveProposal}
+              onNewChat={handleNewChat}
+              storyContext={{
+                storyId: activeStoryId ?? undefined,
+                chapterId: selectedChapterId ?? undefined,
+                effectiveIdentifier: effectiveIdentifier ?? undefined,
+              }}
+              selectedContextData={selectedContextData}
+              storyForContext={generatedStory}
+              onClearContextSelection={handleClearContextSelection}
+            />
           </div>
         )}
 
@@ -1106,7 +1024,7 @@ export default function Home() {
       </div>
 
       {activeStoryId && !isLoadingStoryDetails && activeStoryDetails && (
-        <div className={`w-full max-w-3xl bg-white/60 backdrop-blur-md rounded-xl shadow-lg p-8 border border-gray-200/40 transition-all duration-300 ${!isChatCollapsed ? 'mr-[22rem]' : 'mr-0'} mb-8`}>
+        <div className={`w-full max-w-3xl bg-white/60 backdrop-blur-md rounded-xl shadow-lg p-8 border border-gray-200/40 transition-all duration-300 mb-8`}>
            <h2 className="text-xl font-semibold text-slate-700 mb-4 border-b pb-2">
              Story Content: {activeStoryDetails.title}
            </h2>
@@ -1185,6 +1103,7 @@ export default function Home() {
                                             onChange={(newContent) => handleStoryPartChange(part.id, newContent)}
                                             placeholder="Edit story content..."
                                             className="bg-white/90 rounded-md border border-gray-300/50 focus-within:ring-1 focus-within:ring-slate-400 focus-within:border-slate-400 mb-2"
+                                            onContextSelectionChange={(indices) => console.log(`Context selected for part ${part.id}:`, indices)}
                                         />
                                         <div className="mt-2 flex justify-end items-center space-x-3">
                                             {partSavingState.error && (
@@ -1211,17 +1130,6 @@ export default function Home() {
            )}
         </div>
       )}
-
-      <Chat
-        className="z-50"
-        isCollapsed={isChatCollapsed}
-        setIsCollapsed={setIsChatCollapsed}
-        currentStory={generatedStory}
-        onAcceptProposal={handleAcceptProposal}
-        onRejectProposal={handleRejectProposal}
-        onReceiveProposal={handleReceiveProposal}
-        onNewChat={handleNewChat}
-      />
 
       <AuthModal isOpen={isAuthModalOpen} onClose={closeAuthModal} />
 

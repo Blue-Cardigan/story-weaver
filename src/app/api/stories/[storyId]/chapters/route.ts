@@ -8,10 +8,10 @@
 
     export async function POST(
         req: NextRequest,
-        params: any
+        context: any
     ) {
         const supabaseServer = createSupabaseServerClient();
-        const { storyId } = params;
+        const { storyId } = context.params;
 
         if (!storyId) {
             return NextResponse.json({ error: 'Story ID is required' }, { status: 400 });
