@@ -11,6 +11,8 @@ import Placeholder from '@tiptap/extension-placeholder';
 import { Node } from '@tiptap/pm/model'; // Import Node type
 // Import the custom extension
 import { ParagraphSelector } from './tiptap/ParagraphSelector';
+// Import the Markdown extension
+import { Markdown } from 'tiptap-markdown';
 // PluginKey not directly needed here anymore
 // import { PluginKey } from '@tiptap/pm/state';
 // const paragraphSelectorPluginKey = new PluginKey('paragraphSelector');
@@ -44,6 +46,11 @@ interface EditableTextProps {
   diffStartIndex?: number | null;
   diffEndIndex?: number | null;
   onContextSelectionChange?: (selectedData: ContextParagraphData[]) => void;
+  // Add props for handling accept/reject actions
+  handleAcceptProposal?: (proposal: EditProposal) => void;
+  handleRejectProposal?: () => void;
+  // Add trigger prop to clear selections externally
+  clearSelectionsTrigger?: number | undefined;
 }
 
 export default function EditableText({
@@ -55,6 +62,11 @@ export default function EditableText({
   diffStartIndex = null,
   diffEndIndex = null,
   onContextSelectionChange,
+  // Destructure new props
+  handleAcceptProposal,
+  handleRejectProposal,
+  // Destructure trigger prop
+  clearSelectionsTrigger,
 }: EditableTextProps) {
   // Keep toolbar state for now, might need adjustment
   const [showToolbar, setShowToolbar] = useState(false);
@@ -96,11 +108,20 @@ export default function EditableText({
           if (node.type.name === 'paragraph') {
               if (indices.has(paragraphIndex)) {
                   const text = node.textContent;
-                  const startIndex = pos + 1;
-                  const endIndex = startIndex + text.length;
+                  // Trim text and calculate adjusted indices
+                  const trimmedText = text.trim();
+                  const leadingWhitespace = text.length - text.trimStart().length;
+                  // const trailingWhitespace = text.length - text.trimEnd().length; // Not needed for end index calc
+
+                  // Adjusted start index: Tiptap node start pos + 1 (for node itself) + leading whitespace
+                  const startIndex = pos + 1 + leadingWhitespace;
+                  // Adjusted end index: Adjusted start index + length of the *trimmed* text
+                  const endIndex = startIndex + trimmedText.length;
+
+                  // Push data with trimmed text and adjusted indices
                   selectedData.push({
                       index: paragraphIndex,
-                      text: text,
+                      text: trimmedText, // Use the trimmed text
                       startIndex: startIndex,
                       endIndex: endIndex,
                   });
@@ -118,14 +139,19 @@ export default function EditableText({
     extensions: [
       StarterKit,
       Underline,
-      Placeholder.configure({
-        placeholder: placeholder,
-      }),
-      ParagraphSelector.configure({
-        onSelectionStorageChange: handleSelectionStorageChange,
+      Placeholder.configure({ placeholder }),
+      ParagraphSelector.configure({ onSelectionStorageChange: handleSelectionStorageChange }),
+      // Add the Markdown extension to parse initial content and handle paste
+      Markdown.configure({
+        html: true, // Allow HTML tags in source string
+        tightLists: true, // No <p> inside <li> in markdown output
+        linkify: true, // Autoconvert URL-like text to links
+        breaks: false, // Convert newlines (\n) to <br> tags
+        transformPastedText: true, // Parse markdown pasted into the editor
+        transformCopiedText: true, // Convert copied text to markdown
       }),
     ],
-    content: initialHtmlContent,
+    content: value,
     immediatelyRender: false,
     onUpdate: ({ editor }) => {
       isInternalUpdate.current = true;
@@ -176,13 +202,31 @@ export default function EditableText({
         isInternalUpdate.current = false;
         return;
       }
-      const newHtml = markdownToHtmlParagraphs(value);
-      const currentHtml = currentEditor.getHTML();
-      if (currentHtml !== newHtml) {
-         currentEditor.commands.setContent(newHtml, false);
+
+      // Compare incoming value with current markdown representation
+      // Note: getMarkdown() might not be available if the extension isn't fully loaded initially?
+      // Comparing HTML might be safer if initial load timing is tricky.
+      // For now, assume getMarkdown is available.
+      const currentMarkdown = currentEditor.storage.markdown?.getMarkdown() ?? '';
+
+      if (value !== currentMarkdown) {
+         // Set content using the raw markdown value
+         // The Markdown extension's parse logic handles conversion.
+         // Use `false` for emitUpdate to prevent loop with onUpdate -> onChange
+         currentEditor.commands.setContent(value, false);
       }
     }
   }, [value]); // Dependency: only the external value prop
+
+  // Effect to clear selections when the trigger prop changes
+  useEffect(() => {
+      // Only run if the trigger is defined and the editor exists
+      if (clearSelectionsTrigger !== undefined && editor && !editor.isDestroyed) {
+          console.log("EditableText: Clearing paragraph selections due to trigger.");
+          // Call the custom command added to the ParagraphSelector extension
+          editor.commands.clearParagraphSelection();
+      }
+  }, [clearSelectionsTrigger, editor]); // Dependencies: trigger and editor instance
 
   // REMOVED: Effect to sync React state changes for selectedParagraphIndices TO the editor storage
   // useEffect(() => { ... });
@@ -215,56 +259,87 @@ export default function EditableText({
   };
 
   // Conditional rendering for diff view
-  if (proposalForDiff && diffStartIndex !== null && diffEndIndex !== null) {
-    // Extract original and proposed text
-    const originalText = value.substring(diffStartIndex, diffEndIndex);
-    // Get proposed text directly from the proposal object
-    const proposedText = proposalForDiff.text ?? ''; // Default to empty string if text is missing
+  if (proposalForDiff && diffStartIndex !== null && diffEndIndex !== null && handleAcceptProposal && handleRejectProposal) {
+    // Extract original and proposed text based on proposal type
+    let originalSegment = '';
+    let proposedText = proposalForDiff.text ?? '';
+
+    if (proposalForDiff.type === 'replace_all') {
+        originalSegment = value; // Original is the entire current value
+        // proposedText is already set correctly
+    } else if (proposalForDiff.type === 'replace' || proposalForDiff.type === 'delete') {
+        originalSegment = value.substring(diffStartIndex, diffEndIndex);
+        // proposedText is correct for replace, will be empty for delete (as text is undefined)
+    } else if (proposalForDiff.type === 'insert') {
+        originalSegment = ''; // Nothing is being replaced
+        // proposedText is the text to insert
+    }
+
+    // Determine if the proposal type is actionable (should show buttons)
+    const isActionableProposal = ['replace', 'insert', 'delete', 'replace_all'].includes(proposalForDiff.type);
 
     return (
-      // Keep the diff view rendering as it was, it doesn't use the editor
-      <div
-        className="w-full p-3 border border-amber-300/70 rounded-md bg-amber-50/40 font-serif text-gray-800 leading-relaxed min-h-[200px] whitespace-pre-wrap break-words"
-        aria-label="Proposed change preview"
-      >
-         {/* Text Before Change */}
-         {value.substring(0, diffStartIndex)}
+      <div className={`${className} relative`}> {/* Add relative positioning */} 
+        {/* Diff View Container */}
+        <div
+          className="w-full p-3 border border-amber-300 rounded-md bg-amber-50/40 font-serif text-gray-800 leading-relaxed min-h-[200px] whitespace-pre-wrap break-words prose prose-sm max-w-none"
+          aria-label="Proposed change preview"
+        >
+          {/* Text Before Change */}
+          {value.substring(0, diffStartIndex)}
 
-         {/* Show Original and Proposed side-by-side or block */}
-         <div className="my-2 p-2 border border-dashed border-gray-300 rounded-md bg-white/50">
-             <div className="mb-1">
-                 <span className="text-xs font-semibold text-red-700 bg-red-100 px-1.5 py-0.5 rounded-sm mr-1">Original:</span>
-                 <span className="text-red-800 line-through">{originalText || '[nothing]'}</span>
-             </div>
-             <div>
-                 <span className="text-xs font-semibold text-green-700 bg-green-100 px-1.5 py-0.5 rounded-sm mr-1">Proposed:</span>
-                 <span className="text-green-800">{proposedText || '[deletion]'}</span>
-             </div>
-         </div>
+          {/* Show Diff */}
+          <div className="my-2 p-2 border border-dashed border-gray-300 rounded-md bg-white/50 inline-block">
+              {/* Deleted Text (strikethrough red) - only if not insert/replace_all */}
+              {originalSegment && proposalForDiff.type !== 'insert' && proposalForDiff.type !== 'replace_all' && (
+                  <del className="text-red-600 bg-red-100 px-1 rounded mx-0.5">
+                      {originalSegment}
+                  </del>
+              )}
+                {/* Inserted Text (bold green) - only if not delete */}
+                {proposedText && proposalForDiff.type !== 'delete' && (
+                  <ins className="text-green-700 bg-green-100 px-1 rounded mx-0.5 no-underline font-semibold">
+                      {proposedText}
+                  </ins>
+              )}
+          </div>
 
-         {/* Text After Change */}
-         {value.substring(diffEndIndex)}
+          {/* Text After Change */}
+          {value.substring(diffEndIndex ?? diffStartIndex) /* Use startIndex if endIndex is null (e.g., for insert) */}
+        </div>
+
+        {/* Accept/Reject Buttons (only if proposal is actionable) */}
+        {isActionableProposal && (
+            <div className="absolute bottom-2 right-2 z-10 bg-white/80 backdrop-blur-sm p-1 rounded-md shadow-md border border-gray-200 flex space-x-2">
+                 <button
+                    onClick={() => handleRejectProposal()} // Call reject handler
+                    className="px-2 py-1 text-xs bg-red-100 text-red-700 border border-red-300 rounded hover:bg-red-200 transition-colors"
+                    title="Reject this suggestion"
+                 >
+                     Reject
+                 </button>
+                 <button
+                    onClick={() => handleAcceptProposal(proposalForDiff)} // Pass the proposal to accept handler
+                    className="px-2 py-1 text-xs bg-green-100 text-green-700 border border-green-300 rounded hover:bg-green-200 transition-colors"
+                    title="Accept this suggestion"
+                 >
+                    {proposalForDiff.type === 'replace_all' ? 'Accept Full Text' : 'Accept Edit'}
+                </button>
+            </div>
+        )}
       </div>
-     );
+    );
   }
 
-  // Render the TipTap editor
-  return (
-    // Moved relative positioning from editorProps to here, might be more reliable
-    <div className={`relative ${className}`}>
-      {showToolbar && editor && (
-        <div className="absolute -top-10 right-0 z-10">
-          {/* Pass editor instance to toolbar if needed, or keep handleFormat */}
-          <TextToolbar onFormat={handleFormat} />
-        </div>
-      )}
-      {/* Render TipTap editor using the instance from useEditor */}
-      {/* EditorContent correctly handles null editor instance initially */}
-      <EditorContent editor={editor} />
-      {/* Placeholder needs Placeholder extension */}
-      {/* {editor && editor.isEmpty && <div className="text-gray-400 absolute top-3 left-3 pointer-events-none">{placeholder}</div>} */}
+  // --- Default Editor View (No Diff) ---
 
-      {/* Paragraph dots are now handled entirely by the ParagraphSelector extension's decorations */}
+  // Toolbar (only show if editor has focus or selection)
+  const showActualToolbar = editor?.isFocused || showToolbar;
+
+  return (
+    <div className={`${className} relative`}> {/* Add relative positioning */} 
+      {editor && showActualToolbar && <TextToolbar onFormat={handleFormat} />}
+      <EditorContent editor={editor} />
     </div>
   );
 } 

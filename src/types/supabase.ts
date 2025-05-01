@@ -301,6 +301,15 @@ export type Database = {
           user_id: string
         }[]
       }
+      save_chapters: {
+        Args: {
+          _story_id: string
+          _user_id: string
+          _user_identifier: string
+          _chapters: Json
+        }
+        Returns: undefined
+      }
     }
     Enums: {
       story_structure_type: "book" | "short_story"

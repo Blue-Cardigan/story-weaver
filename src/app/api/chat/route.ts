@@ -34,13 +34,16 @@ function getSystemInstructionText(): string {
 
 IMPORTANT: Respond ONLY with a valid JSON object. Do NOT include any text outside this JSON object.
 The JSON object must have the following fields:
-- "type": (string) One of "replace", "insert", "delete", "clarification", "none".
+- "type": (string) One of "replace", "insert", "delete", "clarification", "none", "replace_all".
 - "explanation": (string) Your reasoning or clarifying questions.
-- "contextParagraphIndices": (number[], optional) Use this field to targets one or more [Paragraph N] marked paragraphs mentioned in the user's most recent message. Provide the artificial indix/indices (N) for those paragraphs (e.g., [0], or [1, 2]). Only use indices from the most recent message. If the edit does not apply to these specifically marked paragraphs from the latest message, OMIT this field entirely.
-- "text": (string, optional) Required for 'replace'/'insert'. The new text.
+- "contextParagraphIndices": (number[], optional) If the edit applies specifically to one or more [Paragraph N] blocks from the *most recent user message*, provide the artificial index/indices (N) here (e.g., [0], or [1, 2]). Only use indices explicitly marked in the *latest* message. OMIT this field otherwise.
+- "text": (string, optional) Required for 'replace', 'insert', and 'replace_all'. For 'replace_all', this should be the *entire* new text content.
+- "startIndex": (number, optional) Required for 'replace', 'insert', 'delete' *unless* 'contextParagraphIndices' is used. Character index where the edit begins.
+- "endIndex": (number, optional) Required for 'replace', 'delete' *unless* 'contextParagraphIndices' is used. Character index where the edit ends (exclusive for delete/replace).
 
 Guidelines:
-- Use \`contextParagraphIndices\` *only* for paragraphs marked [Paragraph N] in the current request. Calculate start/end indices yourself if this field is omitted.
+- Use 'replace_all' for requests that rewrite the entire text (e.g., "make it shorter", "summarize", "change the tone"). 'text' must contain the complete new version. Do *not* provide 'startIndex' or 'endIndex' for 'replace_all'.
+- Use 'contextParagraphIndices' *only* for paragraphs marked [Paragraph N] in the current request. If this field is omitted, you must calculate 'startIndex'/'endIndex' yourself for 'replace', 'insert', or 'delete'.
 - If the user's request is unclear or ambiguous, use type "clarification".
 - If no change is needed based on the request, use type "none".
 `;
@@ -66,7 +69,7 @@ export async function POST(request: Request) {
     let contextualUserPrompt = userRequest; // Start with the actual user text
 
     // Add context paragraph text using artificial indices
-    let hasContextParagraphs = originalContextData && originalContextData.length > 0;
+    const hasContextParagraphs = originalContextData && originalContextData.length > 0;
     if (hasContextParagraphs) {
         const contextParagraphText = `\n\nThe following ${originalContextData.length === 1 ? 'paragraph was' : 'paragraphs were'} specifically selected for context (marked [Paragraph N]):\n${originalContextData.map((data, artificialIndex) => `[Paragraph ${artificialIndex}] "${data.text.replace(/"/g, '\\"')}"`).join("\n")}`;
         contextualUserPrompt += contextParagraphText;
@@ -89,12 +92,12 @@ export async function POST(request: Request) {
     // --- End Contextual User Prompt Construction ---
 
 
-    // Construct the contents array: history + new contextual user prompt
-    const contents: Content[] = [...messages, { role: "user", parts: [{ text: contextualUserPrompt }] }];
+    // Construct the contents array: NEW USER PROMPT ONLY
+    const contents: Content[] = [{ role: "user", parts: [{ text: contextualUserPrompt }] }];
 
     // Correctly structure the request options according to documentation
     const requestOptions = {
-        model: "gemini-1.5-flash", // Specify the model here
+        model: "gemini-2.0-flash", // Specify the model here
         contents: contents,        // Pass contents here
         config: {                  // Nest config items under 'config'
             generationConfig: generationConfig,
@@ -172,8 +175,24 @@ export async function POST(request: Request) {
         text: llmProposal.text, // Keep optional text
     };
 
-    // *Logic Branch: Prioritize contextParagraphIndices (now an array)*
-    if (Array.isArray(llmProposal.contextParagraphIndices) && llmProposal.contextParagraphIndices.length > 0) {
+    // --- Validation Logic ---
+
+    // Handle 'replace_all' separately first
+    if (finalProposal.type === 'replace_all') {
+        if (finalProposal.text === undefined || typeof finalProposal.text !== 'string') {
+            console.warn(`LLM proposal type 'replace_all' missing or invalid required field 'text'.`);
+            finalProposal.type = 'clarification';
+            finalProposal.explanation = `Error: AI proposed a full replacement ('replace_all') but failed to provide the complete new text. Original explanation: ${finalProposal.explanation}`;
+            delete finalProposal.text;
+        }
+        // Remove any potentially incorrect indices provided for replace_all
+        delete finalProposal.startIndex;
+        delete finalProposal.endIndex;
+        delete (finalProposal as any).contextParagraphIndices; // Also remove this internal field
+
+    }
+    // Handle edits targeting specific context paragraphs
+    else if (Array.isArray(llmProposal.contextParagraphIndices) && llmProposal.contextParagraphIndices.length > 0) {
         const targetIndices = llmProposal.contextParagraphIndices.filter(index =>
             typeof index === 'number' && index >= 0 && index < originalContextData.length
         );
@@ -206,7 +225,15 @@ export async function POST(request: Request) {
                  delete finalProposal.startIndex;
                  delete finalProposal.endIndex;
                  delete finalProposal.text;
+            } else if (finalProposal.type === 'delete' && finalProposal.text !== undefined) {
+                // Delete shouldn't have text
+                delete finalProposal.text;
+            } else if (finalProposal.type === 'insert') {
+                // Insert uses startIndex, but not endIndex derived from context paragraph range
+                delete finalProposal.endIndex;
+                 // Use startIndex calculated above as the insertion point
             }
+
 
              // Warn if some indices were filtered out but we still proceeded
              if (targetIndices.length !== llmProposal.contextParagraphIndices.length) {
@@ -214,69 +241,45 @@ export async function POST(request: Request) {
                  finalProposal.explanation = `(Note: Some requested paragraph indices were invalid and ignored.) ${finalProposal.explanation}`;
              }
         }
+        delete (finalProposal as any).contextParagraphIndices; // Remove internal field
     }
-    // *Logic Branch: Use LLM-calculated indices if contextParagraphIndices wasn't used*
-    else {
-        // Validate indices provided by LLM for non-context edits
-         if ((llmProposal.type === 'replace' || llmProposal.type === 'delete')) {
-             if (llmProposal.startIndex === undefined || llmProposal.endIndex === undefined) {
-                console.warn(`LLM proposal type '${llmProposal.type}' missing required fields 'startIndex' or 'endIndex' (and no contextParagraphIndices).`);
-                finalProposal.type = 'clarification';
-                finalProposal.explanation = `Error: AI proposed a ${llmProposal.type} edit outside specific context paragraphs but failed to provide the necessary start/end character indices. Original explanation: ${finalProposal.explanation}`;
-                delete finalProposal.text; // Clear text if indices are missing for replace/delete
-             } else {
-                 // Basic validation: ensure startIndex <= endIndex
-                 if (llmProposal.startIndex > llmProposal.endIndex) {
-                    console.warn(`LLM proposal type '${llmProposal.type}' has startIndex (${llmProposal.startIndex}) greater than endIndex (${llmProposal.endIndex}).`);
-                    finalProposal.type = 'clarification';
-                    finalProposal.explanation = `Error: AI proposed a ${llmProposal.type} edit with invalid indices (start index ${llmProposal.startIndex} > end index ${llmProposal.endIndex}). Original explanation: ${finalProposal.explanation}`;
-                    delete finalProposal.text;
-                 } else {
-                     finalProposal.startIndex = llmProposal.startIndex;
-                     finalProposal.endIndex = llmProposal.endIndex;
-                 }
-             }
-         }
-         // Validate text for replace/insert (only if not already a clarification)
-         if (finalProposal.type !== 'clarification' && (llmProposal.type === 'replace' || llmProposal.type === 'insert')) {
-             if (llmProposal.text === undefined) {
-                 console.warn(`LLM proposal type '${llmProposal.type}' missing required field 'text' (and no contextParagraphIndices).`);
-                 finalProposal.type = 'clarification';
-                 finalProposal.explanation = `Error: AI proposed a ${llmProposal.type} edit outside specific context paragraphs but failed to provide the text. Original explanation: ${finalProposal.explanation}`;
-                 delete finalProposal.startIndex; // Also remove indices if text is missing
-                 delete finalProposal.endIndex;
-             } else {
-                 finalProposal.text = llmProposal.text; // Assign text if present
-                  // Assign startIndex for insert if provided and valid
-                 if (llmProposal.type === 'insert') {
-                    if (llmProposal.startIndex === undefined || typeof llmProposal.startIndex !== 'number' || llmProposal.startIndex < 0) {
-                         console.warn(`LLM proposal type 'insert' missing or invalid 'startIndex'.`);
-                         finalProposal.type = 'clarification';
-                         finalProposal.explanation = `Error: AI proposed an insert edit outside specific context paragraphs but failed to provide a valid insertion point (startIndex). Original explanation: ${finalProposal.explanation}`;
-                         delete finalProposal.text;
-                         delete finalProposal.startIndex;
-                    } else {
-                        finalProposal.startIndex = llmProposal.startIndex;
-                         // For insert, endIndex is not typically used, so remove if LLM provided it erroneously
-                        delete finalProposal.endIndex;
-                    }
-                 }
-             }
-         } else if (finalProposal.type !== 'clarification' && llmProposal.type === 'insert') {
-             // Handle case where 'insert' might have been flagged as clarification due to missing indices earlier, but text is present.
-              if (llmProposal.text === undefined) {
-                 // This case should be covered above, but double-check
-                 finalProposal.type = 'clarification';
-                 finalProposal.explanation = `Error: AI proposed an insert edit outside specific context paragraphs but failed to provide the text. Original explanation: ${finalProposal.explanation}`;
-                 delete finalProposal.startIndex;
-                 delete finalProposal.endIndex;
-             }
-             // We already handled assigning text and startIndex above if they were valid
-         }
-    }
+    // Handle edits *not* targeting specific context paragraphs (require startIndex/endIndex from LLM)
+    else if (['replace', 'insert', 'delete'].includes(finalProposal.type!)) {
+        const requiresText = ['replace', 'insert'].includes(finalProposal.type!);
+        const requiresStartIndex = ['replace', 'insert', 'delete'].includes(finalProposal.type!);
+        const requiresEndIndex = ['replace', 'delete'].includes(finalProposal.type!);
 
-    // Clean up internal field before sending response
-    delete (finalProposal as any).contextParagraphIndices; // Remove the indices array from the final output
+        let errorExplanation: string | null = null;
+
+        if (requiresText && (finalProposal.text === undefined || typeof finalProposal.text !== 'string')) {
+             errorExplanation = `Error: AI proposed a '${finalProposal.type}' edit outside specific context paragraphs but failed to provide the necessary text.`;
+        } else if (requiresStartIndex && (llmProposal.startIndex === undefined || typeof llmProposal.startIndex !== 'number' || llmProposal.startIndex < 0)) {
+             errorExplanation = `Error: AI proposed a '${finalProposal.type}' edit outside specific context paragraphs but failed to provide a valid 'startIndex'.`;
+        } else if (requiresEndIndex && (llmProposal.endIndex === undefined || typeof llmProposal.endIndex !== 'number' || llmProposal.endIndex < 0)) {
+             errorExplanation = `Error: AI proposed a '${finalProposal.type}' edit outside specific context paragraphs but failed to provide a valid 'endIndex'.`;
+        } else if (requiresEndIndex && typeof llmProposal.startIndex === 'number' && typeof llmProposal.endIndex === 'number' && llmProposal.startIndex > llmProposal.endIndex) {
+             errorExplanation = `Error: AI proposed a '${finalProposal.type}' edit with invalid indices (startIndex ${llmProposal.startIndex} > endIndex ${llmProposal.endIndex}).`;
+        }
+
+        if (errorExplanation) {
+            console.warn(`${errorExplanation} Original explanation: ${finalProposal.explanation}`);
+            finalProposal.type = 'clarification';
+            finalProposal.explanation = `${errorExplanation} Original explanation: ${finalProposal.explanation}`;
+            delete finalProposal.text;
+            delete finalProposal.startIndex;
+            delete finalProposal.endIndex;
+        } else {
+            // Assign validated fields
+            if (requiresStartIndex) finalProposal.startIndex = llmProposal.startIndex;
+            if (requiresEndIndex) finalProposal.endIndex = llmProposal.endIndex;
+            if (!requiresText) delete finalProposal.text; // Remove text if not needed (e.g., delete)
+             if (finalProposal.type === 'insert') delete finalProposal.endIndex; // Insert only uses startIndex
+        }
+    }
+    // --- End Validation Logic ---
+
+    // Clean up internal field just in case it slipped through (should be redundant now)
+    delete (finalProposal as any).contextParagraphIndices;
 
     // Return the structured edit proposal
     return NextResponse.json(finalProposal);

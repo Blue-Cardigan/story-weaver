@@ -1,6 +1,6 @@
-import { Extension } from '@tiptap/core';
-import { Plugin, PluginKey } from '@tiptap/pm/state';
-import { Decoration, DecorationSet } from '@tiptap/pm/view';
+import { Extension, RawCommands, AnyCommands } from '@tiptap/core';
+import { Plugin, PluginKey, Transaction } from '@tiptap/pm/state';
+import { Decoration, DecorationSet, EditorView } from '@tiptap/pm/view';
 import { Node } from '@tiptap/pm/model';
 
 // Define the type for the extension options
@@ -22,40 +22,41 @@ function calculateDecorations(doc: Node, selectedIndices: Set<number>): Decorati
         if (node.type.name === 'paragraph') {
             const isSelected = selectedIndices.has(paragraphIndex);
 
-            // --- Add Widget Decoration for the Dot ---
-            const dot = document.createElement('span');
-            // Use inline styles for reliable positioning relative to the paragraph start
-            dot.style.position = 'absolute';
-            dot.style.left = '-1.5em'; // Position left of the paragraph
-            dot.style.top = '0.3em'; // Adjust vertical alignment
-            dot.style.width = '0.6rem';
-            dot.style.height = '0.6rem';
-            dot.style.borderRadius = '9999px';
-            dot.style.cursor = 'pointer';
-            dot.style.transition = 'background-color 0.2s';
-            dot.style.backgroundColor = isSelected ? 'rgb(59 130 246)' : 'rgb(209 213 219)'; // Blue-500 or Gray-300
-            // Basic hover effect (only changes color, not using Tailwind class for simplicity here)
-            dot.onmouseenter = () => { if (!isSelected) dot.style.backgroundColor = 'rgb(156 163 175)'; }; // Gray-400
-            dot.onmouseleave = () => { if (!isSelected) dot.style.backgroundColor = 'rgb(209 213 219)'; }; // Gray-300
+            // --- Add Widget Decoration for the Vertical Bar ---
+            const bar = document.createElement('span');
+            bar.style.position = 'absolute';
+            bar.style.left = '-1em';
+            bar.style.top = '0';
+            bar.style.width = '3px';
+            bar.style.height = '100%';
+            bar.style.cursor = 'pointer';
+            bar.style.transition = 'background-color 0.2s';
+            bar.style.backgroundColor = isSelected ? 'rgb(59 130 246)' : 'rgb(209 213 219)';
+            bar.onmouseenter = () => { if (!isSelected) bar.style.backgroundColor = 'rgb(156 163 175)'; };
+            bar.onmouseleave = () => { if (!isSelected) bar.style.backgroundColor = 'rgb(209 213 219)'; };
+            bar.title = 'Click to select/deselect paragraph for context';
+            bar.dataset.paragraphIndex = String(paragraphIndex);
 
-            dot.title = 'Click to select/deselect paragraph for context';
-            dot.dataset.paragraphIndex = String(paragraphIndex); // Store index for handlers
-
-            // Add widget decoration before the paragraph content
             decorations.push(Decoration.widget(
                 pos + 1, // Position inside the paragraph node, at the start
-                dot,
-                { side: -1, key: `dot-${paragraphIndex}` } // side: -1 biases towards the start
+                bar,
+                { side: -1, key: `bar-${paragraphIndex}` }
             ));
 
-            // --- Add Node Decoration for Background Highlight ---
+            // --- Add Node Decoration for Background Highlight and Positioning ---
+            const nodeAttrs: { style: string, class?: string } = {
+                // Always apply relative positioning for the absolute bar height
+                style: 'position: relative;'
+            };
             if (isSelected) {
-                decorations.push(Decoration.node(pos, pos + node.nodeSize, {
-                    class: 'bg-blue-100/50 paragraph-selected', // Apply selection background
-                    key: `bg-${paragraphIndex}`
-                }));
+                // Add background class only if selected
+                nodeAttrs.class = 'bg-blue-100/50 paragraph-selected';
             }
-            // Note: Decorations are completely recalculated, so no need to explicitly remove the class
+
+            decorations.push(Decoration.node(pos, pos + node.nodeSize, {
+                ...nodeAttrs,
+                key: `node-style-${paragraphIndex}` // Unique key for this combined decoration
+            }));
 
             paragraphIndex++;
         }
@@ -63,6 +64,17 @@ function calculateDecorations(doc: Node, selectedIndices: Set<number>): Decorati
     return decorations;
 }
 
+// Extend the global Commands interface to include our new command
+declare module '@tiptap/core' {
+  interface Commands<ReturnType> {
+    paragraphSelector: {
+      /**
+       * Clears the paragraph selection state.
+       */
+      clearParagraphSelection: () => ReturnType;
+    }
+  }
+}
 
 export const ParagraphSelector = Extension.create<ParagraphSelectorOptions>({
   name: 'paragraphSelector',
@@ -72,6 +84,25 @@ export const ParagraphSelector = Extension.create<ParagraphSelectorOptions>({
       // Default no-op function for the new callback
       onSelectionStorageChange: () => {},
     };
+  },
+
+  addCommands() {
+    return {
+      clearParagraphSelection: () => ({ tr, dispatch }: { tr: Transaction, dispatch?: (tr: Transaction) => void }) => {
+        // Reset the storage in the extension instance
+        if (this.storage) {
+            this.storage.selectedIndices = new Set<number>();
+        }
+
+        // Dispatch a transaction with metadata to notify the plugin state to update
+        if (dispatch) {
+          // Use the existing plugin key for the metadata
+          dispatch(tr.setMeta(paragraphSelectorPluginKey, { type: 'SELECTION_UPDATED' }));
+        }
+        // Return true to indicate the command successfully ran
+        return true;
+      },
+    } as Partial<RawCommands>;
   },
 
   // Use editor storage to keep track of the selection state
@@ -91,7 +122,7 @@ export const ParagraphSelector = Extension.create<ParagraphSelectorOptions>({
           // Initialize plugin state (the DecorationSet)
           init(_, state) { // state is editor state
             // Calculate initial decorations based on storage (which should be default empty set initially)
-            return DecorationSet.create(state.doc, calculateDecorations(state.doc, extensionThis.storage.selectedIndices));
+            return DecorationSet.create(state.doc, calculateDecorations(state.doc, extensionThis.storage.selectedIndices as Set<number>));
           },
           // Apply transactions to the plugin state
           apply(tr, oldSet, oldState, newState) {
@@ -105,11 +136,10 @@ export const ParagraphSelector = Extension.create<ParagraphSelectorOptions>({
 
             if (needsRecalculation) {
                // Recalculate decorations using the current doc and indices from storage
-               set = DecorationSet.create(newState.doc, calculateDecorations(newState.doc, extensionThis.storage.selectedIndices));
+               set = DecorationSet.create(newState.doc, calculateDecorations(newState.doc, extensionThis.storage.selectedIndices as Set<number>));
 
                // If the selection was explicitly updated, notify the React component
                if (selectionUpdated) {
-                    // Call the callback provided in options to update the React state
                     extensionThis.options.onSelectionStorageChange(extensionThis.storage.selectedIndices as Set<number>);
                }
             }
@@ -125,21 +155,21 @@ export const ParagraphSelector = Extension.create<ParagraphSelectorOptions>({
           },
           // Handle clicks directly on the editor view
           handleDOMEvents: {
-            mousedown: (view, event) => {
+            mousedown: (view: EditorView, event: MouseEvent) => {
                 const target = event.target as HTMLElement;
-                // Find the closest element with paragraph-index data attribute (our dot)
-                const dotElement = target.closest<HTMLElement>('[data-paragraph-index]');
+                // Find the closest element with paragraph-index data attribute (our bar)
+                const barElement = target.closest<HTMLElement>('[data-paragraph-index]'); // Updated variable name
 
-                if (dotElement && dotElement.dataset.paragraphIndex !== undefined) {
-                    // We clicked a dot!
-                    event.preventDefault(); // Prevent default text selection/cursor movement
-                    event.stopPropagation(); // Stop the event bubbling up
+                if (barElement && barElement.dataset.paragraphIndex !== undefined) { // Updated variable name
+                    // We clicked a bar!
+                    event.preventDefault();
+                    event.stopPropagation();
 
-                    const index = parseInt(dotElement.dataset.paragraphIndex, 10);
+                    const index = parseInt(barElement.dataset.paragraphIndex, 10); // Updated variable name
 
                     if (!isNaN(index)) {
                         // Get the current selection directly from storage
-                        const currentIndices = new Set(extensionThis.storage.selectedIndices as Set<number>);
+                        const currentIndices = new Set(extensionThis.storage.selectedIndices as Set<number>); // Added type assertion
 
                         // Toggle the index
                         if (currentIndices.has(index)) {
@@ -152,19 +182,15 @@ export const ParagraphSelector = Extension.create<ParagraphSelectorOptions>({
                         extensionThis.storage.selectedIndices = currentIndices;
 
                         // 2. Dispatch a transaction with metadata to trigger the plugin's 'apply' method
-                        // This will handle decoration updates AND calling the notification callback
-                        const tr = view.state.tr.setMeta(paragraphSelectorPluginKey, { type: 'SELECTION_UPDATED' });
+                        const tr = view.state.tr.setMeta(paragraphSelectorPluginKey, { type: 'SELECTION_UPDATED' }); // Use existing key
                         view.dispatch(tr);
-
-                        // REMOVED: Direct call to React state setter (this.options.setSelectedIndices)
 
                         return true; // Indicate that we handled this event
                     }
                 }
-                // If we didn't click a dot, let other handlers (or default behavior) proceed
+                // If we didn't click a bar, let other handlers proceed
                 return false;
             },
-            // We might add mousemove/mouseup later for drag selection
           },
         },
       }),

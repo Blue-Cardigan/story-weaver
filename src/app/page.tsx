@@ -4,15 +4,16 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createSupabaseBrowserClient } from '@/lib/supabaseBrowserClient';
 import type { Database } from '@/types/supabase';
 import { User } from '@supabase/supabase-js';
-import EditableText from '@/components/EditableText';
-import AuthButton from '@/components/AuthButton';
 import AuthModal from '@/components/AuthModal';
 import DashboardOverlay from '@/components/DashboardOverlay';
 import EditChapterModal from '@/components/EditChapterModal';
 import type { ChapterUpdatePayload } from '@/components/EditChapterModal';
 import { v4 as uuidv4 } from 'uuid';
-import InlineChat from '@/components/InlineChat';
 import type { EditProposal, ContextParagraphData } from '@/types/chat';
+import PageHeader from '@/components/PageHeader';
+import GenerationForm from '@/components/GenerationForm';
+import GeneratedStoryDisplay from '@/components/GeneratedStoryDisplay';
+import StoryContentDisplay from '@/components/StoryContentDisplay';
 
 // Define Story type based on DB schema
 type Story = Database['public']['Tables']['stories']['Row'];
@@ -61,6 +62,7 @@ export default function Home() {
   const [diffEndIndex, setDiffEndIndex] = useState<number | null>(null);
   const [storyPartsSavingStates, setStoryPartsSavingStates] = useState<Record<string, { isLoading: boolean; error: string | null; success: boolean }>>({});
   const [selectedContextData, setSelectedContextData] = useState<ContextParagraphData[]>([]);
+  const [clearSelectionsTrigger, setClearSelectionsTrigger] = useState(0);
 
   // --- State for Editing Chapters ---
   const [isEditChapterModalOpen, setIsEditChapterModalOpen] = useState(false);
@@ -421,81 +423,117 @@ export default function Home() {
   };
 
   const handleAcceptProposal = (proposal: EditProposal) => {
-    setGeneratedStory(prevStory => {
-        if (!prevStory) return "";
+    if (!generatedStory || !proposal) return;
 
-        const { type, startIndex, endIndex, text } = proposal;
+    const { type, startIndex, endIndex, text = '' } = proposal;
 
-        const start = typeof startIndex === 'number' ? startIndex : -1;
-        const end = typeof endIndex === 'number' ? endIndex : -1;
-        const newText = typeof text === 'string' ? text : '';
+    let updatedStory = generatedStory;
 
-        try {
-             switch (type) {
-                case 'replace':
-                    if (start >= 0 && end >= 0 && start <= end && end <= prevStory.length) {
-                        return prevStory.substring(0, start) + newText + prevStory.substring(end);
-                    }
-                    console.warn("Invalid indices for replace operation:", proposal);
-                    return prevStory;
-                case 'insert':
-                     if (start >= 0 && start <= prevStory.length) {
-                        return prevStory.substring(0, start) + newText + prevStory.substring(start);
-                    }
-                     console.warn("Invalid startIndex for insert operation:", proposal);
-                    return prevStory;
-                case 'delete':
-                    if (start >= 0 && end >= 0 && start <= end && end <= prevStory.length) {
-                        return prevStory.substring(0, start) + prevStory.substring(end);
-                    }
-                     console.warn("Invalid indices for delete operation:", proposal);
-                    return prevStory;
-                case 'clarification':
-                case 'none':
-                default:
-                    console.log("No story change applied for type:", type);
-                    return prevStory;
-            }
-        } catch (e) {
-            console.error("Error applying edit:", e, proposal);
-            return prevStory;
-        }
+    try {
+      switch (type) {
+        case 'replace_all':
+          if (proposal.text !== undefined) { // Ensure text is present for replace_all
+            updatedStory = proposal.text;
+          } else {
+            console.error("Error: 'replace_all' proposal missing text.");
+            setError("Failed to apply proposal: Replacement text was missing.");
+            return; // Don't proceed if text is missing
+          }
+          break;
+        case 'replace':
+          if (startIndex !== undefined && endIndex !== undefined) {
+            updatedStory = generatedStory.slice(0, startIndex) + text + generatedStory.slice(endIndex);
+          } else {
+            throw new Error("Missing indices for replace");
+          }
+          break;
+        case 'insert':
+          if (startIndex !== undefined) {
+            updatedStory = generatedStory.slice(0, startIndex) + text + generatedStory.slice(startIndex);
+          } else {
+            throw new Error("Missing startIndex for insert");
+          }
+          break;
+        case 'delete':
+          if (startIndex !== undefined && endIndex !== undefined) {
+            updatedStory = generatedStory.slice(0, startIndex) + generatedStory.slice(endIndex);
+          } else {
+            throw new Error("Missing indices for delete");
+          }
+          break;
+        case 'clarification':
+        case 'none':
+          // No text change needed, just clear the diff
+          break;
+        default:
+          console.warn("Unhandled proposal type in handleAcceptProposal:", type);
+          break;
+      }
 
-    });
-    setProposalForDiff(null);
-    setDiffStartIndex(null);
-    setDiffEndIndex(null);
-  };
+      setGeneratedStory(updatedStory);
+      // Clear the diff state after successful application
+      setProposalForDiff(null);
+      setDiffStartIndex(null);
+      setDiffEndIndex(null);
+      setError(null); // Clear any previous errors
 
-  const handleReceiveProposal = (proposal: EditProposal) => {
-    if ((proposal.type === 'replace' || proposal.type === 'insert' || proposal.type === 'delete') && generatedStory && proposal.startIndex !== undefined) {
-        if ((proposal.type === 'replace' || proposal.type === 'delete') && proposal.endIndex === undefined) {
-            console.warn("Received replace/delete proposal without endIndex:", proposal);
-            setProposalForDiff(null);
-            setDiffStartIndex(null);
-            setDiffEndIndex(null);
-            return;
-        }
-        setProposalForDiff(proposal);
-        setDiffStartIndex(proposal.startIndex);
-        setDiffEndIndex(proposal.endIndex ?? proposal.startIndex);
-    } else {
-       setProposalForDiff(null);
-       setDiffStartIndex(null);
-       setDiffEndIndex(null);
+    } catch (e: any) {
+      console.error("Error applying proposal:", e);
+      setError(`Failed to apply proposal: ${e.message || 'Invalid proposal data'}`);
+      // Optionally clear diff state even on error, or leave it for debugging
+      // setProposalForDiff(null);
+      // setDiffStartIndex(null);
+      // setDiffEndIndex(null);
     }
   };
 
-  const handleRejectProposal = () => {
-    setProposalForDiff(null);
-    setDiffStartIndex(null);
-    setDiffEndIndex(null);
+  // Called when the InlineChat receives a proposal from the API
+  const handleReceiveProposal = (proposal: EditProposal) => {
+    if (!proposal) {
+        setProposalForDiff(null);
+        setDiffStartIndex(null);
+        setDiffEndIndex(null);
+        return;
+    }
+
+    setProposalForDiff(proposal); // Store the full proposal
+
+    // Set indices for diff highlighting
+    if (proposal.type === 'replace_all') {
+        // Highlight the entire original text for a full replacement diff
+        setDiffStartIndex(0);
+        setDiffEndIndex(generatedStory?.length ?? 0);
+    } else if (proposal.startIndex !== undefined) {
+        setDiffStartIndex(proposal.startIndex);
+        // For insert, endIndex might be undefined or same as startIndex for highlighting purposes
+        // For delete/replace, use the provided endIndex
+        setDiffEndIndex(proposal.endIndex ?? proposal.startIndex);
+    } else {
+        // No specific indices provided (e.g., clarification, none, or error in proposal)
+        setDiffStartIndex(null);
+        setDiffEndIndex(null);
+    }
+    setError(null); // Clear previous errors when a new proposal arrives
   };
 
-  const handleNewChat = () => {
+  // Called when user clicks "Reject" in InlineChat
+  const handleRejectProposal = () => {
+    // Clear the diff state
     setProposalForDiff(null);
     setDiffStartIndex(null);
     setDiffEndIndex(null);
+    setError(null); // Clear errors
+  };
+
+  // Called when user clicks "New Chat" in InlineChat
+  const handleNewChat = () => {
+    // Clear the diff state
+    setProposalForDiff(null);
+    setDiffStartIndex(null);
+    setDiffEndIndex(null);
+    setError(null); // Clear errors
+    // Optionally clear context selections too?
+    // handleClearContextSelection();
   };
 
   const openAuthModal = () => setIsAuthModalOpen(true);
@@ -687,45 +725,25 @@ export default function Home() {
       setSelectedContextData(data);
   }, []);
 
-  // Callback to clear context selection (passed to InlineChat)
+  // Callback to clear context selection (passed to InlineChat AND EditableText)
   const handleClearContextSelection = useCallback(() => {
     setSelectedContextData([]);
-  }, []);
+    setClearSelectionsTrigger(prev => prev + 1); // Increment the trigger
+  }, [setSelectedContextData]); // Add dependency
 
   return (
-    <main className={`flex min-h-screen flex-col justify-start p-12 md:p-24 bg-gradient-to-br from-gray-50 via-stone-50 to-slate-100 text-gray-800 font-sans transition-all duration-300`}>
-       <div className={`fixed top-0 left-0 right-0 z-20 flex items-center justify-between p-4 md:p-6 transition-all duration-300 bg-gradient-to-b from-white/80 via-white/50 to-transparent`}>
-         <div className="flex items-center space-x-4">
-            <h1 className="text-2xl md:text-3xl font-semibold text-transparent bg-clip-text bg-gradient-to-r from-slate-600 to-gray-800 py-1">
-              Story Weaver
-            </h1>
-             {/* Show AuthButton (Sign in/up) or Dashboard Trigger */}
-            {!authLoading && (
-              user ? (
-                <button
-                  ref={dashboardTriggerRef}
-                  onClick={openDashboard}
-                  className="text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 rounded py-1 px-2 hover:bg-slate-100/50"
-                  aria-label="Manage your story dashboard"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline -mt-0.5 mr-1 opacity-70" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
-                    </svg>
-                  Manage Stories
-                </button>
-              ) : (
-                <AuthButton onSignInClick={openAuthModal} />
-              )
-            )}
-            {activeStoryDetails && !isLoadingStoryDetails && (
-                <div className="text-sm font-medium text-slate-600 border-l pl-4 ml-2">
-                    Editing: <span className="font-semibold">{activeStoryDetails.title}</span>
-                </div>
-            )}
-         </div>
-       </div>
+    <main className={`flex min-h-screen flex-col justify-start p-4 sm:p-8 md:p-12 lg:p-24 bg-gradient-to-br from-gray-50 via-stone-50 to-slate-100 text-gray-800 font-sans transition-all duration-300`}>
+       <PageHeader
+          user={user}
+          authLoading={authLoading}
+          openDashboard={openDashboard}
+          openAuthModal={openAuthModal}
+          activeStoryDetails={activeStoryDetails}
+          isLoadingStoryDetails={isLoadingStoryDetails}
+          dashboardTriggerRef={dashboardTriggerRef}
+       />
 
-      <div className={`w-full max-w-3xl bg-white/70 backdrop-blur-md rounded-xl shadow-lg p-8 border border-gray-200/50 mb-8 transition-all duration-300 mt-20`}>
+      <div className={`w-full max-w-3xl bg-white/70 backdrop-blur-md rounded-xl shadow-lg p-4 sm:p-6 md:p-8 border border-gray-200/50 mb-8 transition-all duration-300 mt-16 sm:mt-20`}>
         {isLoadingStoryDetails && (
             <p className="text-center text-slate-500 py-4">Loading story details...</p>
          )}
@@ -736,202 +754,42 @@ export default function Home() {
          )}
 
         {!isLoadingStoryDetails && !storyDetailsError && (
-            <form onSubmit={handleSubmit} className="space-y-6">
-            {activeStoryDetails ? (
-                <>
-                    <div className="space-y-4 p-4 bg-slate-50/60 rounded-lg border border-slate-200/70">
-                       <h3 className="text-lg font-semibold text-slate-700">Story Context: {activeStoryDetails.title}</h3>
-                        {activeStoryDetails.global_synopsis && (
-                            <div>
-                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Global Synopsis</label>
-                                <p className="text-sm text-gray-800 bg-white/50 p-2 rounded border border-gray-200/50 whitespace-pre-wrap">{activeStoryDetails.global_synopsis}</p>
-                            </div>
-                        )}
-                        {activeStoryDetails.global_style_note && (
-                             <div>
-                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Global Style Note</label>
-                                <p className="text-sm text-gray-800 bg-white/50 p-2 rounded border border-gray-200/50 whitespace-pre-wrap">{activeStoryDetails.global_style_note}</p>
-                            </div>
-                        )}
-                        {activeStoryDetails.global_additional_notes && (
-                            <div>
-                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Global Additional Notes</label>
-                                <p className="text-sm text-gray-800 bg-white/50 p-2 rounded border border-gray-200/50 whitespace-pre-wrap">{activeStoryDetails.global_additional_notes}</p>
-                            </div>
-                        )}
-                        {!activeStoryDetails.global_synopsis && !activeStoryDetails.global_style_note && !activeStoryDetails.global_additional_notes && (
-                            <p className="text-sm text-slate-500 italic">No global notes set for this story.</p>
-                        )}
-                    </div>
-
-                    {activeStoryDetails.structure_type === 'book' && (
-                        <div className="space-y-4 p-4 bg-blue-50/40 rounded-lg border border-blue-200/60">
-                            <h3 className="text-lg font-semibold text-blue-800">Chapters</h3>
-                            {isLoadingChapters && <p className="text-slate-500 text-sm">Loading chapters...</p>}
-                            {chaptersError && <p className="text-red-600 text-sm">Error loading chapters: {chaptersError}</p>}
-                            {!isLoadingChapters && !chaptersError && (
-                                <div className="space-y-3">
-                                    <div>
-                                        <label htmlFor="chapterSelect" className="block text-sm font-medium text-gray-700 mb-1">Select Chapter</label>
-                                        <select
-                                            id="chapterSelect"
-                                            value={selectedChapterId || ''}
-                                            onChange={(e) => setSelectedChapterId(e.target.value || null)}
-                                            className="w-full p-2 border border-gray-300/70 rounded-md shadow-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white/90 disabled:bg-gray-100"
-                                            disabled={isAddingChapter || isLoading}
-                                        >
-                                            <option value="">-- Select a Chapter --</option>
-                                            {fetchedChapters.map(ch => (
-                                                <option key={ch.id} value={ch.id}>
-                                                    Ch. {ch.chapter_number}{ch.title ? `: ${ch.title}` : ''}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                    {/* Add Edit Button for Selected Chapter */}
-                                    {selectedChapterId && (
-                                        <div className="mt-2">
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    const chapterToEdit = fetchedChapters.find(ch => ch.id === selectedChapterId);
-                                                    if (chapterToEdit) {
-                                                        handleOpenEditChapterModal(chapterToEdit);
-                                                    }
-                                                }}
-                                                disabled={isUpdatingChapter || isLoading}
-                                                className="text-xs py-1 px-2 rounded border border-slate-400 hover:bg-slate-100 text-slate-700 transition disabled:opacity-50"
-                                            >
-                                                Edit Selected Chapter Info
-                                            </button>
-                                        </div>
-                                    )}
-
-                                    <details className="group pt-2">
-                                        <summary className="cursor-pointer text-sm font-medium text-blue-600 hover:text-blue-800 list-none inline-flex items-center">
-                                             <span className="group-open:hidden">+ Add New Chapter</span>
-                                             <span className="hidden group-open:inline">▼ Add New Chapter</span>
-                                        </summary>
-                                        <div className="mt-3 space-y-3 p-3 bg-white/60 rounded border border-blue-200/80">
-                                             <div>
-                                                <label htmlFor="newChapterNumber" className="block text-xs font-medium text-gray-600 mb-0.5">Chapter Number*</label>
-                                                <input type="number" id="newChapterNumber" value={newChapterNumber} onChange={e => setNewChapterNumber(e.target.value === '' ? '' : parseInt(e.target.value))} min="1" className="w-full p-1.5 text-sm border border-gray-300/70 rounded-md" placeholder={`Next: ${(fetchedChapters[fetchedChapters.length - 1]?.chapter_number || 0) + 1}`} />
-                                             </div>
-                                              <div>
-                                                <label htmlFor="newChapterTitle" className="block text-xs font-medium text-gray-600 mb-0.5">Title (Optional)</label>
-                                                <input type="text" id="newChapterTitle" value={newChapterTitle} onChange={e => setNewChapterTitle(e.target.value)} className="w-full p-1.5 text-sm border border-gray-300/70 rounded-md" />
-                                             </div>
-                                             <div>
-                                                <label htmlFor="newChapterSynopsis" className="block text-xs font-medium text-gray-600 mb-0.5">Synopsis (Optional)</label>
-                                                <textarea id="newChapterSynopsis" value={newChapterSynopsis} onChange={e => setNewChapterSynopsis(e.target.value)} rows={2} className="w-full p-1.5 text-sm border border-gray-300/70 rounded-md"></textarea>
-                                             </div>
-                                             {addChapterError && <p className="text-xs text-red-600">{addChapterError}</p>}
-                                             <div className="flex justify-end">
-                                                <button type="button" onClick={handleAddChapterClick} disabled={isAddingChapter || !newChapterNumber} className="py-1 px-3 text-xs border rounded bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-50">
-                                                    {isAddingChapter ? 'Adding...' : 'Add Chapter'}
-                                                </button>
-                                             </div>
-                                        </div>
-                                    </details>
-                                </div>
-                            )}
-                        </div>
-                    )}
-
-                     <div>
-                        <label htmlFor="partInstructions" className="block text-sm font-medium text-gray-700 mb-1">
-                            Instructions for Next Part {selectedChapterId && fetchedChapters.find(c => c.id === selectedChapterId) ? `(Chapter ${fetchedChapters.find(c => c.id === selectedChapterId)?.chapter_number})` : ''}
-                        </label>
-                        <textarea
-                          id="partInstructions"
-                          name="partInstructions"
-                          rows={4}
-                          className="w-full p-3 border border-gray-300/70 rounded-lg shadow-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500 bg-white/80 placeholder-gray-400 transition duration-150 ease-in-out"
-                          placeholder="Describe what should happen in this section..."
-                          value={partInstructions}
-                          onChange={(e) => setPartInstructions(e.target.value)}
-                          required
-                        />
-                      </div>
-                </>
-            ) : (
-                 <>
-                    <div>
-                        <label htmlFor="synopsis" className="block text-sm font-medium text-gray-700 mb-1">Synopsis</label>
-                        <textarea
-                          id="synopsis" name="synopsis" rows={4}
-                          className="w-full p-3 border border-gray-300/70 rounded-lg shadow-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500 bg-white/80 placeholder-gray-400 transition duration-150 ease-in-out"
-                          placeholder="A lone astronaut discovers an ancient artifact on Mars..."
-                          value={synopsis} onChange={(e) => setSynopsis(e.target.value)} required
-                        />
-                    </div>
-                     <div>
-                        <label htmlFor="styleNote" className="block text-sm font-medium text-gray-700 mb-1">Style Note</label>
-                        <textarea
-                          id="styleNote" name="styleNote" rows={3}
-                          className="w-full p-3 border border-gray-300/70 rounded-lg shadow-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500 bg-white/80 placeholder-gray-400 transition duration-150 ease-in-out"
-                          placeholder="Evoke a sense of cosmic horror and isolation, minimalist prose..."
-                          value={styleNote} onChange={(e) => setStyleNote(e.target.value)} required
-                        />
-                    </div>
-                 </>
-            )}
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                    <label htmlFor="length" className="block text-sm font-medium text-gray-700 mb-1">Desired Length (words)</label>
-                    <input
-                        type="number" id="length" name="length"
-                        className="w-full p-3 border border-gray-300/70 rounded-lg shadow-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500 bg-white/80 placeholder-gray-400 transition duration-150 ease-in-out [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                        placeholder="e.g., 500" value={length}
-                        onChange={(e) => setLength(e.target.value === '' ? '' : parseInt(e.target.value, 10))}
-                        required min="1"
-                    />
-                </div>
-                <div className="flex items-center justify-start md:justify-end md:pt-7">
-                    <div className="flex items-center h-5">
-                         <input id="useWebSearch" name="useWebSearch" type="checkbox"
-                            checked={useWebSearch} onChange={(e) => setUseWebSearch(e.target.checked)}
-                            className="focus:ring-slate-500 h-4 w-4 text-slate-600 border-gray-300/70 rounded transition duration-150 ease-in-out"
-                         />
-                    </div>
-                     <div className="ml-3 text-sm">
-                        <label htmlFor="useWebSearch" className="font-medium text-gray-700">Use Web Search</label>
-                        <p id="useWebSearch-description" className="text-xs text-gray-500">Allow AI to search the web (if needed).</p>
-                    </div>
-                </div>
-            </div>
-
-            <div className="flex items-center justify-between pt-4 border-t border-slate-200/60">
-                 {activeStoryId && (
-                     <button
-                        type="button"
-                        onClick={handleUnloadStory}
-                        className="py-2 px-4 border border-slate-400 text-slate-600 rounded-md text-sm font-medium hover:bg-slate-100 transition duration-150 ease-in-out"
-                     >
-                        ← Unload Story / New Idea
-                     </button>
-                 )}
-                 {!activeStoryId && <div />}
-
-                <button
-                  type="submit"
-                  disabled={isLoading || isAccepting || isLoadingStoryDetails || isLoadingChapters ||
-                      (activeStoryDetails?.structure_type === 'book' && !selectedChapterId && currentStoryParts.some(p => p.chapter_id))}
-                  className={`inline-flex justify-center py-2 px-6 border border-transparent shadow-sm text-sm font-medium rounded-md text-white transition duration-150 ease-in-out ${
-                      (isLoading || isAccepting || isLoadingStoryDetails || isLoadingChapters || (activeStoryDetails?.structure_type === 'book' && !selectedChapterId && currentStoryParts.some(p => p.chapter_id)))
-                      ? 'bg-gray-400 cursor-not-allowed'
-                      : 'bg-gradient-to-r from-slate-600 to-gray-800 hover:from-slate-700 hover:to-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500'
-                  }`}
-                  title={ (activeStoryDetails?.structure_type === 'book' && !selectedChapterId && currentStoryParts.some(p => p.chapter_id)) ? 'Please select a chapter' : ''}
-                >
-                  {isLoading ? (
-                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"> <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle> <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path> </svg>
-                  ) : null}
-                  {isLoading ? 'Weaving...' : (activeStoryId ? 'Generate Next Part' : 'Generate Story Section')}
-                </button>
-             </div>
-            </form>
+            <GenerationForm
+                handleSubmit={handleSubmit}
+                activeStoryDetails={activeStoryDetails}
+                synopsis={synopsis}
+                setSynopsis={setSynopsis}
+                styleNote={styleNote}
+                setStyleNote={setStyleNote}
+                partInstructions={partInstructions}
+                setPartInstructions={setPartInstructions}
+                length={length}
+                setLength={setLength}
+                useWebSearch={useWebSearch}
+                setUseWebSearch={setUseWebSearch}
+                isLoading={isLoading}
+                isAccepting={isAccepting}
+                isLoadingStoryDetails={isLoadingStoryDetails}
+                isLoadingChapters={isLoadingChapters}
+                handleUnloadStory={handleUnloadStory}
+                activeStoryId={activeStoryId}
+                fetchedChapters={fetchedChapters}
+                chaptersError={chaptersError}
+                selectedChapterId={selectedChapterId}
+                setSelectedChapterId={setSelectedChapterId}
+                isAddingChapter={isAddingChapter}
+                newChapterNumber={newChapterNumber}
+                setNewChapterNumber={setNewChapterNumber}
+                newChapterTitle={newChapterTitle}
+                setNewChapterTitle={setNewChapterTitle}
+                newChapterSynopsis={newChapterSynopsis}
+                setNewChapterSynopsis={setNewChapterSynopsis}
+                addChapterError={addChapterError}
+                handleAddChapterClick={handleAddChapterClick}
+                handleOpenEditChapterModal={handleOpenEditChapterModal}
+                isUpdatingChapter={isUpdatingChapter}
+                currentStoryParts={currentStoryParts}
+            />
         )}
 
         {error && (
@@ -957,60 +815,29 @@ export default function Home() {
           </div>
         )}
 
-        {!isLoading && generatedStory && (
-          <div className="mt-8 p-6 bg-slate-50/50 border border-slate-200/80 rounded-lg shadow-inner space-y-4">
-            <h2 className="text-xl font-semibold text-slate-700">
-                {activeStoryId ? 'Generated Next Part' : 'Generated Story'} (ID: {currentGenerationId?.substring(0, 8)}...):
-            </h2>
-            <EditableText
-              value={generatedStory}
-              onChange={setGeneratedStory}
-              placeholder="Your story will appear here..."
-              className="bg-white/80 rounded-md"
+        {!isLoading && (
+          <GeneratedStoryDisplay
+              generatedStory={generatedStory}
+              setGeneratedStory={setGeneratedStory}
+              activeStoryId={activeStoryId}
               proposalForDiff={proposalForDiff}
               diffStartIndex={diffStartIndex}
               diffEndIndex={diffEndIndex}
-              onContextSelectionChange={handleContextSelection}
-            />
-
-            <div className="pt-4 border-t border-slate-200 flex flex-col sm:flex-row justify-end items-center space-y-2 sm:space-y-0 sm:space-x-3">
-                {acceptStatus && (
-                    <span className={`text-sm font-medium ${acceptStatus.type === 'success' ? 'text-green-600' : 'text-red-600'} order-first sm:order-none`}>
-                        {acceptStatus.message}
-                    </span>
-                )}
-              <div className="flex space-x-3 w-full sm:w-auto justify-end">
-                <button 
-                  onClick={handleAccept}
-                  disabled={!currentGenerationId || isAccepting || acceptStatus?.type === 'success'}
-                  className={`py-1 px-4 border rounded text-sm font-medium transition duration-150 ease-in-out 
-                              ${isAccepting ? 'bg-gray-200 text-gray-500 cursor-wait' : 
-                               acceptStatus?.type === 'success' ? 'bg-green-100 text-green-700 border-green-300 cursor-not-allowed' : 
-                               'border-green-600 text-green-700 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed'}
-                            `}
-                >
-                  {isAccepting ? 'Accepting...' : acceptStatus?.type === 'success' ? 'Accepted' : 'Accept'}
-                </button>
-              </div>
-            </div> 
-
-            <InlineChat 
-              currentStory={generatedStory}
+              handleContextSelection={handleContextSelection}
               currentGenerationId={currentGenerationId}
-              onAcceptProposal={handleAcceptProposal}
-              onRejectProposal={handleRejectProposal}
-              onReceiveProposal={handleReceiveProposal}
-              onNewChat={handleNewChat}
-              storyContext={{
-                storyId: activeStoryId ?? undefined,
-                chapterId: selectedChapterId ?? undefined,
-                effectiveIdentifier: effectiveIdentifier ?? undefined,
-              }}
+              handleAcceptProposal={handleAcceptProposal}
+              handleRejectProposal={handleRejectProposal}
+              handleReceiveProposal={handleReceiveProposal}
+              handleNewChat={handleNewChat}
+              selectedChapterId={selectedChapterId}
+              effectiveIdentifier={effectiveIdentifier}
               selectedContextData={selectedContextData}
-              storyForContext={generatedStory}
-              onClearContextSelection={handleClearContextSelection}
-            />
-          </div>
+              handleClearContextSelection={handleClearContextSelection}
+              clearSelectionsTrigger={clearSelectionsTrigger}
+              acceptStatus={acceptStatus}
+              handleAccept={handleAccept}
+              isAccepting={isAccepting}
+          />
         )}
 
         {!isLoading && !generatedStory && !error && (
@@ -1024,111 +851,18 @@ export default function Home() {
       </div>
 
       {activeStoryId && !isLoadingStoryDetails && activeStoryDetails && (
-        <div className={`w-full max-w-3xl bg-white/60 backdrop-blur-md rounded-xl shadow-lg p-8 border border-gray-200/40 transition-all duration-300 mb-8`}>
-           <h2 className="text-xl font-semibold text-slate-700 mb-4 border-b pb-2">
-             Story Content: {activeStoryDetails.title}
-           </h2>
-
-           {isLoadingStoryParts && <p className="text-slate-500 text-center py-4">Loading story parts...</p>}
-           {storyPartsError && (
-              <div className="mb-4 p-3 bg-red-50 border border-red-300 text-red-600 rounded-lg text-sm">
-                  <p><span className="font-medium">Error loading parts:</span> {storyPartsError}</p>
-              </div>
-           )}
-
-           {isLoadingChapters && activeStoryDetails.structure_type === 'book' && <p className="text-slate-500 text-center py-4">Loading chapter index...</p>}
-
-           {!isLoadingStoryParts && !storyPartsError && currentStoryParts.length === 0 && !isLoadingChapters && (
-              <p className="text-slate-500 text-center py-4 italic">This story doesn't have any parts yet. Generate the first one above!</p>
-           )}
-
-           {!isLoadingStoryParts && !storyPartsError && !isLoadingChapters && currentStoryParts.length > 0 && (
-              <div className="space-y-8 max-h-[70vh] overflow-y-auto pr-2 ">
-                 {groupedStoryParts.sortedGroupKeys?.map((chapterKey) => {
-                      const chapter = groupedStoryParts.chapterMap?.get(chapterKey);
-                      const partsInGroup = groupedStoryParts.groups?.[chapterKey] || [];
-
-                      if (partsInGroup.length === 0 && chapterKey !== 'uncategorized') return null;
-
-                      return (
-                        <section key={chapterKey} className="space-y-4">
-                           {chapter && (
-                              <div className="sticky top-0 bg-white/80 backdrop-blur-sm py-1 -mx-4 px-4 z-10 border-b border-blue-200 mb-2">
-                                <div className="flex justify-between items-center mb-1">
-                                  <h3 className="text-lg font-semibold text-blue-700">
-                                      Chapter {chapter.chapter_number}{chapter.title ? `: ${chapter.title}` : ''}
-                                  </h3>
-                                  <button 
-                                      onClick={() => handleOpenEditChapterModal(chapter)}
-                                      className="ml-2 text-xs text-blue-600 hover:text-blue-800 p-1 rounded hover:bg-blue-100/50 transition-colors">
-                                      Edit
-                                  </button>
-                                </div>
-                                {(chapter.style_notes || chapter.additional_notes) && (
-                                  <div className="text-xs text-gray-700 space-y-1 pb-1">
-                                    {chapter.style_notes && (
-                                      <div>
-                                        <span className="font-medium text-gray-600">Style:</span>
-                                        <p className="pl-2 whitespace-pre-wrap">{chapter.style_notes}</p>
-                                      </div>
-                                    )}
-                                    {chapter.additional_notes && (
-                                      <div>
-                                        <span className="font-medium text-gray-600">Notes:</span>
-                                        <p className="pl-2 whitespace-pre-wrap">{chapter.additional_notes}</p>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                           )}
-                           {chapterKey === 'uncategorized' && partsInGroup.length > 0 && (
-                               <h3 className="text-lg font-semibold text-gray-600 border-b border-gray-200 pb-1 sticky top-0 bg-white/80 backdrop-blur-sm py-1 -mx-4 px-4 z-10">
-                                   Uncategorized Parts
-                               </h3>
-                           )}
-
-                           {partsInGroup.map((part, index) => {
-                                const partSavingState = storyPartsSavingStates[part.id] || { isLoading: false, error: null, success: false };
-                                return (
-                                    <div key={part.id} className={`ml-${chapter ? 4 : 0} p-4 rounded-lg border transition-shadow duration-150 ${part.is_accepted ? 'bg-green-50/70 border-green-200 shadow-sm' : 'bg-white/80 border-gray-200/80'}`}>
-                                        <div className="flex justify-between items-center mb-2">
-                                             <p className="text-sm font-medium text-gray-800">
-                                                 {part.is_accepted && <span className="ml-1 text-xs font-semibold text-green-700 py-0.5 px-1.5 rounded bg-green-100 border border-green-200">[Latest Accepted]</span>}
-                                             </p>
-                                             <p className="text-xs text-gray-500">ID: {part.id?.substring(0, 8)}...</p>
-                                         </div>
-                                        <EditableText
-                                            value={part.generated_story || ''}
-                                            onChange={(newContent) => handleStoryPartChange(part.id, newContent)}
-                                            placeholder="Edit story content..."
-                                            className="bg-white/90 rounded-md border border-gray-300/50 focus-within:ring-1 focus-within:ring-slate-400 focus-within:border-slate-400 mb-2"
-                                            onContextSelectionChange={(indices) => console.log(`Context selected for part ${part.id}:`, indices)}
-                                        />
-                                        <div className="mt-2 flex justify-end items-center space-x-3">
-                                            {partSavingState.error && (
-                                                <span className="text-xs text-red-600">Error: {partSavingState.error}</span>
-                                            )}
-                                            {partSavingState.success && (
-                                                <span className="text-xs text-green-600">Saved!</span>
-                                            )}
-                                            <button
-                                                onClick={() => handleSaveChangesForPart(part.id)}
-                                                disabled={partSavingState.isLoading}
-                                                className={`py-1 px-3 text-xs border rounded transition duration-150 ease-in-out ${partSavingState.isLoading ? 'bg-gray-200 text-gray-500 cursor-wait' : 'border-slate-400 text-slate-600 hover:bg-slate-100 focus:outline-none focus:ring-1 focus:ring-offset-1 focus:ring-slate-400 disabled:opacity-50'}`}
-                                            >
-                                                {partSavingState.isLoading ? 'Saving...' : 'Save Changes'}
-                                            </button>
-                                        </div>
-                                    </div>
-                                )
-                            })}
-                        </section>
-                      )
-                 })}
-              </div>
-           )}
-        </div>
+         <StoryContentDisplay
+            activeStoryDetails={activeStoryDetails}
+            isLoadingStoryParts={isLoadingStoryParts}
+            storyPartsError={storyPartsError}
+            isLoadingChapters={isLoadingChapters}
+            currentStoryParts={currentStoryParts}
+            groupedStoryParts={groupedStoryParts}
+            handleOpenEditChapterModal={handleOpenEditChapterModal}
+            storyPartsSavingStates={storyPartsSavingStates}
+            handleStoryPartChange={handleStoryPartChange}
+            handleSaveChangesForPart={handleSaveChangesForPart}
+         />
       )}
 
       <AuthModal isOpen={isAuthModalOpen} onClose={closeAuthModal} />

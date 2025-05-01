@@ -4,7 +4,7 @@ import { parseParagraphs } from '@/lib/textUtils';
 // Import types from the central types file
 import type { ContextParagraphData, EditProposal } from '@/types/chat';
 
-interface Message {
+interface Message { // Keep Message type temporarily if needed for API history construction
   id: string;
   text: string; // For user messages or fallback assistant text
   type: 'user' | 'assistant';
@@ -12,15 +12,15 @@ interface Message {
   selections?: string[]; // Text selected with mouse/shortcut
   contextParagraphs?: string[]; // Paragraphs selected via dots
   proposal?: EditProposal | null; // To store the structured proposal from the API
-  proposalActioned?: boolean; // Flag to hide buttons after action
+  // proposalActioned?: boolean; // No longer needed here
 }
 
 interface InlineChatProps {
   currentStory: string | null; // The story content being discussed/refined
   currentGenerationId: string | null; // ID of the current generation being discussed
   // Callbacks to parent (page.tsx)
-  onAcceptProposal: (proposal: EditProposal) => void; // User clicked "Accept" on a specific proposal
-  onRejectProposal: (messageId: string) => void; // User clicked "Reject" on a specific proposal
+  // REMOVED: onAcceptProposal: (proposal: EditProposal) => void; // User clicked "Accept" on a specific proposal
+  // REMOVED: onRejectProposal: (messageId: string) => void; // User clicked "Reject" on a specific proposal
   onReceiveProposal: (proposal: EditProposal) => void; // API returned a proposal, notify parent to show diff etc.
   onNewChat: () => void; // User requested to clear the chat history
   storyContext?: { // Optional context for the API
@@ -38,8 +38,8 @@ interface InlineChatProps {
 export default function InlineChat({
   currentStory,
   currentGenerationId,
-  onAcceptProposal,
-  onRejectProposal,
+  // REMOVED: onAcceptProposal,
+  // REMOVED: onRejectProposal,
   onReceiveProposal,
   onNewChat,
   storyContext,
@@ -49,148 +49,93 @@ export default function InlineChat({
   storyForContext,
   onClearContextSelection,
 }: InlineChatProps) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  // Remove state related to displaying messages
+  // const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
-  const [selectedTextInsideChat, setSelectedTextInsideChat] = useState('');
-  const [pendingSelections, setPendingSelections] = useState<string[]>([]);
+  // Remove internal chat selection state
+  // const [selectedTextInsideChat, setSelectedTextInsideChat] = useState('');
+  // const [pendingSelections, setPendingSelections] = useState<string[]>([]);
   const [isChatLoading, setIsChatLoading] = useState(false); // Loading state for API calls
   const [chatError, setChatError] = useState<string | null>(null); // Error state for API calls
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Remove messagesEndRef
+  // const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Scroll to bottom when messages change
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  // Remove effects related to messages
+  // useEffect(() => {
+  //   messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  // }, [messages]);
 
-  // Clear chat when the story/generation context changes significantly (e.g., new part generated or accepted)
   useEffect(() => {
-    setMessages([]);
-    setPendingSelections([]);
+    // Clear input and error state on generation change, but not messages (as they don't exist)
+    // setMessages([]);
+    // setPendingSelections([]);
     setInputText('');
     setChatError(null);
     setIsChatLoading(false);
   }, [currentGenerationId]);
 
+  // Remove internal chat selection handlers
+  // const handleTextSelectionInsideChat = () => { ... };
+  // const handleAddSelectionFromChat = () => { ... };
 
-  // --- Selection Handling ---
-  const handleTextSelectionInsideChat = () => {
-    const selection = window.getSelection();
-    if (selection && selection.toString().trim()) {
-      setSelectedTextInsideChat(selection.toString().trim());
-    } else {
-      setSelectedTextInsideChat('');
-    }
-  };
-
-  const handleAddSelectionFromChat = () => {
-    if (selectedTextInsideChat) {
-      setPendingSelections(prev => [...prev, selectedTextInsideChat]);
-      setSelectedTextInsideChat('');
-    }
-  };
-
-  const addGlobalSelection = useCallback((text: string) => {
-    if (text) {
-      setPendingSelections(prev => [...prev, text]);
-      console.log("Selection added:", text);
-    }
-  }, []);
-
-  // --- Global Shortcut Listener ---
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-      if (!event.key) return;
-      const shortcutPressed = event.key.toLowerCase() === 'a' && event.ctrlKey && (
-        (isMac && event.metaKey) || (!isMac && event.altKey)
-      );
-      if (shortcutPressed) {
-        event.preventDefault();
-        const selection = window.getSelection();
-        const selectedText = selection ? selection.toString().trim() : '';
-        if (selectedText) {
-          addGlobalSelection(selectedText);
-        }
-      }
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [addGlobalSelection]);
-
-  // Button handler to add current global selection
-  const handleAddGlobalSelectionClick = () => {
-      const selection = window.getSelection();
-      const selectedText = selection ? selection.toString().trim() : '';
-      if (selectedText) {
-          addGlobalSelection(selectedText);
-      } else {
-          console.log("No text selected on the page.");
-      }
-  };
-
-  // --- Message Sending ---
+  // --- Message Sending --- (Keep core logic, but don't add to local message state)
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     const userRequestText = inputText.trim();
-    const hasPendingTextSelection = pendingSelections.length > 0;
+    // Remove pendingSelections usage
+    // const hasPendingTextSelection = pendingSelections.length > 0;
     const hasPendingParagraphSelection = selectedContextData.length > 0;
 
-    // Require story context AND either text input OR some selection
-    if (!currentStory || (!userRequestText && !hasPendingTextSelection && !hasPendingParagraphSelection) || isChatLoading) {
-        setChatError("Cannot send message: No story context, input, or selections provided.");
+    // Require story context AND either text input OR paragraph selection
+    if (!currentStory || (!userRequestText && !hasPendingParagraphSelection) || isChatLoading) {
+        setChatError("Cannot send message: No story context, input, or paragraph selections provided.");
         return;
     }
 
     setIsChatLoading(true);
     setChatError(null);
 
-    // --- Prepare Context Paragraphs ---
+    // --- Prepare Context Paragraphs --- (Keep this)
     let contextParagraphsContent: string[] = [];
     if (hasPendingParagraphSelection && storyForContext) {
         try {
-            const allParagraphs = parseParagraphs(storyForContext);
-            contextParagraphsContent = selectedContextData
+            // Need parseParagraphs or similar logic here if we still want to display paragraph text in API request?
+            // For now, just pass the selectedContextData indices
+            // We might not need the text here if API only needs indices + full story
+            // Let's assume API uses the full story + selectedContextData.indices for now
+             contextParagraphsContent = selectedContextData
                 .sort((a, b) => a.index - b.index) // Ensure order
-                .map(data => allParagraphs[data.index])
-                .filter(p => p !== undefined); // Filter out potential invalid indices
+                .map(data => data.text) // Map to text for history/debugging? Or omit?
+                .filter(p => p !== undefined);
         } catch (error) {
             console.error("Error extracting context paragraphs:", error);
             setChatError("Failed to extract selected paragraphs for context.");
-            // Optional: Decide whether to proceed without paragraph context or stop
         }
     }
     // --- End Prepare Context Paragraphs ---
 
-    const userMessage: Message = {
-      id: `user-${Date.now()}`,
-      text: userRequestText || (hasPendingParagraphSelection ? "Paragraph context added" : "Selection(s) added"),
-      type: 'user',
-      timestamp: new Date(),
-      selections: [...pendingSelections], // Add regular selections
-      contextParagraphs: contextParagraphsContent, // Add paragraph context
-    };
-    setMessages(prev => [...prev, userMessage]);
+    // Don't create user message for local state
+    // const userMessage: Message = { ... };
+    // setMessages(prev => [...prev, userMessage]);
     setInputText('');
-    const currentSelections = [...pendingSelections]; // Capture text selections for API
-    setPendingSelections([]); // Clear pending text selections
-    // Clear paragraph selections via callback *after* preparing message
+    // Remove pendingSelections usage
+    // const currentSelections = [...pendingSelections];
+    // setPendingSelections([]);
+    // Clear paragraph selections via callback *after* preparing payload
     if (hasPendingParagraphSelection) {
         onClearContextSelection();
     }
 
-    const apiHistory = messages.map(msg => ({
-        role: msg.type === 'assistant' ? 'model' : 'user',
-        parts: [{ text: msg.proposal?.explanation || msg.text }]
-    }));
+    // Construct history - Ensure this is always empty for single-turn
+    // const apiHistory = messages.map(msg => ({ ... }));
+    const apiHistory: any[] = []; // Ensure this remains empty or is removed if payload structure allows
 
-    // --- Prepare API Payload ---
+    // --- Prepare API Payload --- (Simplify)
     const apiPayload = {
-        messages: apiHistory,
+        messages: [], // Add empty messages array to satisfy API validation
         currentStory: currentStory,
         userRequest: userRequestText,
-        selections: currentSelections,
+        // selections: currentSelections, // Omit simple selections for now
         contextParagraphData: selectedContextData, // Pass the full data including indices
         currentGenerationId: currentGenerationId,
         ...(storyContext && { storyContext }),
@@ -211,208 +156,87 @@ export default function InlineChat({
 
         const proposalResult: EditProposal = await response.json();
 
-        // Notify parent about the received proposal (for diffing, etc.)
-        // Do this BEFORE adding the message to local state? Or after? Let's do it before.
+        // Directly call onReceiveProposal instead of adding to local state
         onReceiveProposal(proposalResult);
 
-        const assistantMessage: Message = {
-            id: `asst-${Date.now()}`,
-            text: proposalResult.explanation, // Display the explanation
-            type: 'assistant',
-            timestamp: new Date(),
-            proposal: proposalResult, // Store the structured proposal
-            proposalActioned: false,
-        };
-        setMessages(prev => [...prev, assistantMessage]);
+        // Don't create assistant message for local state
+        // const assistantMessage: Message = { ... };
+        // setMessages(prev => [...prev, assistantMessage]);
 
     } catch (err: any) {
         console.error('InlineChat API request failed:', err);
         setChatError(err.message || 'Failed to get response from assistant.');
-        const errorMessage: Message = {
-            id: `err-${Date.now()}`,
-            text: `Error: ${err.message || 'Failed to get response from assistant.'}`,
-            type: 'assistant',
-            timestamp: new Date(),
-        };
-        setMessages(prev => [...prev, errorMessage]);
+        // Don't add error message to local state
+        // const errorMessage: Message = { ... };
+        // setMessages(prev => [...prev, errorMessage]);
+        // Maybe notify parent of error?
+        // For now, just show error below input.
     } finally {
         setIsChatLoading(false);
     }
   };
 
-  // --- Handlers for Accept/Reject within Chat ---
-  const handleAcceptEdit = (messageId: string, proposal: EditProposal) => {
-    onAcceptProposal(proposal); // Call parent function to apply the change to the main story state
-    setMessages(prev => prev.map(msg =>
-      msg.id === messageId ? { ...msg, proposalActioned: true } : msg
-    ));
-  };
+  // Remove handlers for Accept/Reject within Chat
+  // const handleAcceptEdit = (messageId: string, proposal: EditProposal) => { ... };
+  // const handleRejectEdit = (messageId: string) => { ... };
 
-  const handleRejectEdit = (messageId: string) => {
-     onRejectProposal(messageId); // Call parent function (e.g., to clear diff highlights)
-     setMessages(prev => prev.map(msg =>
-       msg.id === messageId ? { ...msg, proposalActioned: true, text: `Suggestion declined: ${msg.text}` } : msg
-     ));
-  };
-
-  // --- Handler for starting a new chat thread ---
+  // --- Handler for starting a new chat thread --- (Simplify)
   const handleStartNewChat = () => {
-    setMessages([]);
-    setPendingSelections([]);
+    // setMessages([]);
+    // setPendingSelections([]);
     setInputText('');
     setChatError(null);
     setIsChatLoading(false);
     onNewChat(); // Notify parent (e.g., clear diffs)
+    onClearContextSelection(); // Clear paragraph selections
   }
 
   return (
-    <div className={`mt-4 border border-slate-200/80 rounded-lg shadow-inner bg-slate-50/50 ${className}`}>
-      {/* Chat History Area */}
-      <div className="max-h-60 overflow-y-auto p-3 space-y-3 border-b border-slate-200/60">
-          {messages.length === 0 && !isChatLoading && !chatError && (
-             <p className="text-sm text-gray-500 italic text-center py-2">Ask for edits or refinements here...</p>
-          )}
-         {messages.map(message => (
-          <div
-            key={message.id}
-            className={`p-2 rounded-lg text-sm max-w-[85%] ${
-              message.type === 'user'
-                ? 'bg-blue-50 border border-blue-100 ml-auto'
-                : 'bg-gray-100 border border-gray-200 mr-auto'
-            }`}
-          >
-            {/* Display user text selections */}
-            {message.type === 'user' && message.selections && message.selections.length > 0 && (
-             <div className="mb-1 border-b border-dashed border-yellow-300 pb-1">
-               <span className="text-xs font-semibold text-yellow-700 block">Selections:</span>
-               {message.selections.map((selection, index) => (
-                 <div key={index} className="text-xs bg-yellow-100 p-1 mt-1 rounded border border-yellow-200 break-words">
-                   "{selection}"
-                 </div>
-               ))}
-             </div>
-            )}
-            {/* Display user paragraph context selections */}
-            {message.type === 'user' && message.contextParagraphs && message.contextParagraphs.length > 0 && (
-             <div className="mb-1 border-b border-dashed border-blue-300 pb-1 mt-1">
-               <span className="text-xs font-semibold text-blue-700 block">Context Paragraphs:</span>
-               {message.contextParagraphs.map((paragraph, index) => (
-                 <div key={index} className="text-xs bg-blue-100 p-1 mt-1 rounded border border-blue-200 break-words">
-                   "{paragraph}"
-                 </div>
-               ))}
-             </div>
-            )}
+    // Adjust container styling as needed, remove border/background if desired
+    <div className={`mt-4 ${className}`}> 
+      {/* REMOVE Chat History Area */}
+      {/* <div className="max-h-60 overflow-y-auto p-3 space-y-3 border-b border-slate-200/60"> ... </div> */}
+      
+      {/* REMOVE Selection Adder within Chat Area */}
+      {/* {selectedTextInsideChat && ( ... )} */}
 
-            {/* Display message text */}
-            <p className="text-gray-800 whitespace-pre-wrap break-words">{message.text}</p>
-
-            {/* Display Assistant Edit Proposal Actions */}
-            {message.type === 'assistant' && message.proposal && !message.proposalActioned &&
-             (message.proposal.type === 'replace' || message.proposal.type === 'insert' || message.proposal.type === 'delete') && (
-              <div className="mt-2 pt-2 border-t border-gray-200 flex justify-end space-x-2">
-                <button
-                  onClick={() => handleRejectEdit(message.id)}
-                  className="px-2 py-1 text-xs bg-red-100 text-red-700 border border-red-300 rounded hover:bg-red-200 transition-colors"
-                >
-                  Reject
-                </button>
-                <button
-                  onClick={() => handleAcceptEdit(message.id, message.proposal!)}
-                  className="px-2 py-1 text-xs bg-green-100 text-green-700 border border-green-300 rounded hover:bg-green-200 transition-colors"
-                >
-                  Accept Edit
-                </button>
-              </div>
-            )}
-            {message.proposalActioned && (
-                <div className="mt-1 text-xs text-gray-400 italic">Suggestion actioned.</div>
-            )}
-
-            <div className="text-xs text-gray-400 mt-1 text-right">
-              {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </div>
-          </div>
-         ))}
-          {isChatLoading && (
-              <div className="p-2 text-center text-xs text-gray-500">Assistant is thinking...</div>
-          )}
-          {chatError && (
-               <div className="p-2 text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg mt-2">
+      {/* Keep Input Area */} 
+      <form onSubmit={handleSendMessage} className="p-3">
+         {chatError && (
+               <div className="mb-2 p-2 text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg">
                   <span className="font-semibold">Error:</span> {chatError}
                </div>
           )}
-          {/* Pending selections display */}
-          {pendingSelections.length > 0 && (
-            <div className="p-2 text-xs text-gray-600 bg-yellow-50 border border-yellow-200 rounded-lg sticky bottom-0 shadow-sm">
-              <span className="font-semibold">Pending Selections ({pendingSelections.length}):</span>
-              <ul className="list-disc list-inside ml-2 max-h-20 overflow-y-auto">
-                {pendingSelections.map((sel, i) => <li key={i} className="truncate">"{sel}"</li>)}
-              </ul>
-               <button
-                    onClick={() => setPendingSelections([])}
-                    className="text-xs text-gray-500 hover:text-red-600 float-right -mt-4 mr-1"
-                    title="Clear selections"
-                >
-                    &times;
-                </button>
-            </div>
-          )}
-          <div ref={messagesEndRef} />
-      </div>
-
-      {/* Selection Adder within Chat Area */}
-       {selectedTextInsideChat && (
-            <div className="p-2 border-b border-gray-200/70 bg-gray-50">
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-gray-600 truncate flex-1 mr-2">
-                  Selected in chat: "{selectedTextInsideChat}"
-                </p>
-                <button
-                  onClick={handleAddSelectionFromChat}
-                  className="px-2 py-1 text-xs bg-yellow-500 text-white rounded hover:bg-yellow-600 transition-colors"
-                >
-                  Add Selection
-                </button>
-              </div>
-            </div>
-       )}
-
-      {/* Input Area */}
-      <form onSubmit={handleSendMessage} className="p-3">
         <div className="flex items-center space-x-2">
-          <button
-              type="button"
-              onClick={handleAddGlobalSelectionClick}
-              title="Add selected text from page (Shortcut: Cmd+Ctrl+A or Ctrl+Alt+A)"
-              className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-100 rounded-md transition-colors border border-gray-300/70"
-          >
-             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-              </svg>
-          </button>
            <button
               type="button"
               onClick={handleStartNewChat}
-              className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-100 rounded-md transition-colors border border-gray-300/70"
-              title="Start New Chat Thread"
+              className="flex items-center space-x-1.5 px-2 py-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-100 rounded-md transition-colors border border-gray-300/70 text-xs"
+              title="Clear Request, Diff & Selections"
             >
-             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              {/* Replace icon? Maybe refresh/clear? */}
+             <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /> {/* Close/Clear Icon */}
              </svg>
+             {/* Conditionally display selection count */}
+             {selectedContextData.length > 0 && (
+                 <span className="font-medium bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">
+                     {selectedContextData.length}
+                 </span>
+             )}
             </button>
           <input
             type="text"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
-            placeholder={currentStory ? "Ask for changes or refinements..." : "Generate a story first..."}
+            placeholder={currentStory ? "Request an edit..." : "Generate a story first..."}
             className="flex-1 p-2 text-sm border border-gray-300/70 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100"
             disabled={isChatLoading || !currentStory}
           />
           <button
             type="submit"
-            // Update disabled condition slightly to account for paragraph selections
-            disabled={(!inputText.trim() && pendingSelections.length === 0 && selectedContextData.length === 0) || isChatLoading || !currentStory}
+            // Update disabled condition (no pendingSelections)
+            disabled={(!inputText.trim() && selectedContextData.length === 0) || isChatLoading || !currentStory}
             className="px-3 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
           >
             {isChatLoading ? (
