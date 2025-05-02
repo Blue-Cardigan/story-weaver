@@ -57,7 +57,7 @@ export default function AuthButton({ onSignInClick }: AuthButtonProps) {
       onClick={onSignInClick}
       className={`${buttonClasses} bg-slate-600 hover:bg-slate-700 text-white`}
     >
-      Sign in / Sign up
+      Sign in / up to write your whole narrative
     </button>
   );
 } 

@@ -25,6 +25,9 @@ interface GeneratedStoryDisplayProps {
     handleAccept: () => Promise<void>;
     isAccepting: boolean;
     clearSelectionsTrigger?: number;
+    handleContinueNarrative: () => Promise<void>;
+    isLoading: boolean;
+    isAuthenticated: boolean;
 }
 
 const GeneratedStoryDisplay: React.FC<GeneratedStoryDisplayProps> = ({
@@ -48,15 +51,18 @@ const GeneratedStoryDisplay: React.FC<GeneratedStoryDisplayProps> = ({
     handleAccept,
     isAccepting,
     clearSelectionsTrigger,
+    handleContinueNarrative,
+    isLoading,
+    isAuthenticated,
 }) => {
     if (!generatedStory) return null;
 
+    const canContinue = !!generatedStory && (!!activeStoryId || !isAuthenticated);
+    const continueDisabled = isLoading || !canContinue || !!proposalForDiff;
+
     return (
         <div className="mt-8 bg-slate-50/50 border border-slate-200/80 rounded-lg shadow-inner">
-            <h2 className={`text-xl font-semibold text-slate-700 ${activeStoryId ? 'px-6 pt-6' : ''}`}>
-                {activeStoryId ? 'Generated Next Part' : ''}
-            </h2>
-            <div className={`${activeStoryId ? 'pt-6' : ''}`}>
+            <div>
                 <EditableText
                     value={generatedStory}
                     onChange={setGeneratedStory}
@@ -89,23 +95,40 @@ const GeneratedStoryDisplay: React.FC<GeneratedStoryDisplayProps> = ({
             </div>
 
             <div className="pt-4 border-t border-slate-200 flex flex-col sm:flex-row justify-end items-center space-y-2 sm:space-y-0 sm:space-x-3 px-6 pb-4">
-                {acceptStatus && (
-                    <span className={`text-sm font-medium ${acceptStatus.type === 'success' ? 'text-green-600' : 'text-red-600'} order-first sm:order-none`}>
+                {acceptStatus && !isLoading && (
+                    <span className={`text-sm font-medium ${acceptStatus.type === 'success' ? 'text-green-600' : 'text-red-600'} order-first sm:order-none mr-auto`}>
                         {acceptStatus.message}
                     </span>
                 )}
                 <div className="flex space-x-3 w-full sm:w-auto justify-end">
                     <button
-                        onClick={handleAccept}
-                        disabled={!currentGenerationId || isAccepting || acceptStatus?.type === 'success'}
+                        onClick={handleContinueNarrative}
+                        disabled={continueDisabled}
                         className={`py-1 px-4 border rounded text-sm font-medium transition duration-150 ease-in-out
-                              ${isAccepting ? 'bg-gray-200 text-gray-500 cursor-wait' :
-                                acceptStatus?.type === 'success' ? 'bg-green-100 text-green-700 border-green-300 cursor-not-allowed' :
-                                'border-green-600 text-green-700 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed'}
-                            `}
+                            ${continueDisabled
+                                ? 'bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed'
+                                : 'border-blue-600 text-blue-700 hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500'
+                            }
+                        `}
+                        title={continueDisabled ? (isLoading ? "Generation in progress..." : !canContinue ? "Cannot continue from this state" : "Cannot continue while reviewing changes") : "Generate the next part based on this text"}
                     >
-                        {isAccepting ? 'Saving...' : acceptStatus?.type === 'success' ? 'Saved' : 'Save'}
+                        {isLoading ? 'Generating...' : 'Continue Narrative'}
                     </button>
+
+                    {isAuthenticated && (
+                        <button
+                            onClick={handleAccept}
+                            disabled={!currentGenerationId || isAccepting || acceptStatus?.type === 'success' || !!proposalForDiff || isLoading}
+                            className={`py-1 px-4 border rounded text-sm font-medium transition duration-150 ease-in-out
+                                ${isAccepting ? 'bg-gray-200 text-gray-500 cursor-wait' :
+                                    acceptStatus?.type === 'success' ? 'bg-green-100 text-green-700 border-green-300 cursor-not-allowed' :
+                                    'border-green-600 text-green-700 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed'}
+                                `}
+                            title={!isAuthenticated ? "Log in to save story parts" : (acceptStatus?.type === 'success' ? "Part already saved" : (isAccepting ? "Saving..." : "Save this generated part to your story"))}
+                        >
+                            {isAccepting ? 'Saving...' : acceptStatus?.type === 'success' ? 'Saved' : 'Save'}
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

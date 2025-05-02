@@ -21,6 +21,8 @@ type StoryGeneration = Database['public']['Tables']['story_generations']['Row'];
 type DbChapter = Database['public']['Tables']['chapters']['Row'];
 
 const ANON_USER_ID_KEY = 'storyWeaverAnonUserId';
+const ANON_CONTINUE_COUNT_KEY = 'storyWeaverAnonContinueCount';
+const MAX_ANON_CONTINUES = 3;
 
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
@@ -106,6 +108,7 @@ export default function Home() {
            setAuthLoading(false);
            if (currentUser && event !== 'SIGNED_OUT') {
                setIsAuthModalOpen(false);
+               resetAnonContinueCount();
            }
            if (event === 'SIGNED_OUT') {
                setIsDashboardOpen(false);
@@ -233,6 +236,7 @@ export default function Home() {
 
         await fetchStoryDetails(activeStoryId);
         await fetchStoryParts(activeStoryId);
+        resetAnonContinueCount();
       };
       loadData();
     } else {
@@ -253,6 +257,7 @@ export default function Home() {
       setProposalForDiff(null);
       setDiffStartIndex(null);
       setDiffEndIndex(null);
+      resetAnonContinueCount();
     }
   }, [activeStoryId, effectiveIdentifier]);
 
@@ -551,6 +556,7 @@ export default function Home() {
       setProposalForDiff(null);
       setDiffStartIndex(null);
       setDiffEndIndex(null);
+      resetAnonContinueCount();
   };
 
   const handleStoryPartChange = (partId: string, newContent: string) => {
@@ -731,6 +737,142 @@ export default function Home() {
     setClearSelectionsTrigger(prev => prev + 1); // Increment the trigger
   }, [setSelectedContextData]); // Add dependency
 
+  // --- Function to reset anon continue count ---
+  const resetAnonContinueCount = () => {
+    try {
+      localStorage.removeItem(ANON_CONTINUE_COUNT_KEY);
+      console.log('Anonymous continue count reset.');
+    } catch (e) {
+      console.error('Failed to reset anon continue count in localStorage:', e);
+    }
+  };
+
+  // --- Updated handleContinueNarrative ---
+  const handleContinueNarrative = async () => {
+    // Check anonymous limit first
+    if (!user) {
+      try {
+        const currentCount = parseInt(localStorage.getItem(ANON_CONTINUE_COUNT_KEY) || '0', 10);
+        if (currentCount >= MAX_ANON_CONTINUES) {
+          console.log(`Anon user reached continue limit (${currentCount}/${MAX_ANON_CONTINUES}). Prompting auth.`);
+          openAuthModal(); // Open the auth modal
+          // Optionally add a reason state to show a specific message in the modal
+          // setAuthReason('continue_limit');
+          return; // Stop execution
+        }
+      } catch (e) {
+        console.error('Failed to read anon continue count from localStorage:', e);
+        // Decide how to handle - proceed or block? Let's proceed but log error.
+      }
+    }
+
+    // Guard clauses (remain the same)
+    if (authLoading || !effectiveIdentifier || isLoading || !generatedStory || length === '' || length <= 0) {
+       console.warn("Continue narrative aborted due to missing data or loading state.", {
+           authLoading, effectiveIdentifier: !!effectiveIdentifier, isLoading, generatedStory: !!generatedStory, length
+       });
+       setError("Cannot continue narrative. Ensure you have generated text, set a valid length, and are not currently loading.");
+       return;
+     }
+      // Additional check specific to continuing *within* a story context
+     if (activeStoryId && !activeStoryDetails) {
+       setError("Cannot continue narrative: Story details are not loaded yet.");
+       return;
+     }
+     // Check for standalone continuation context
+     if (!activeStoryId && (!synopsis.trim() || !styleNote.trim())) {
+       setError("Cannot continue narrative without the original synopsis and style note for context.");
+       return;
+     }
+
+    // ... (rest of the setup: setIsLoading, clear state, build payload - remains the same) ...
+    setIsLoading(true);
+    setError(null);
+    setCurrentGenerationId(null);
+    setAcceptStatus(null);
+    const isBookMode = activeStoryDetails?.structure_type === 'book';
+    const payload: any = {
+      length,
+      useWebSearch: false,
+      partInstructions: "Continue the narrative naturally from the previous part, maintaining the established style and tone.",
+      previousPartContent: generatedStory,
+    };
+    if (activeStoryId && activeStoryDetails) {
+        payload.storyId = activeStoryId;
+        payload.globalSynopsis = activeStoryDetails.global_synopsis;
+        payload.globalStyleNote = activeStoryDetails.global_style_note;
+        payload.storyTargetLength = activeStoryDetails.target_length;
+        const currentLength = currentStoryParts.reduce((sum, part) => {
+            return sum + (part.generated_story?.split(/\s+/).filter(Boolean).length || 0);
+        }, 0) + (generatedStory.split(/\s+/).filter(Boolean).length || 0);
+        payload.currentStoryLength = currentLength;
+        if (isBookMode && selectedChapterId) {
+             payload.chapterId = selectedChapterId;
+        }
+    } else {
+      payload.synopsis = synopsis;
+      payload.styleNote = styleNote;
+    }
+    if (!user && anonUserIdentifier) {
+      payload.userIdentifier = anonUserIdentifier;
+    }
+
+     try {
+      const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `API request failed with status ${response.status}`);
+
+      if (result.story) {
+        setGeneratedStory(result.story);
+        if (result.generationId) {
+             setCurrentGenerationId(result.generationId);
+             console.log(`Continued narrative. New part ID: ${result.generationId}`);
+         } else {
+              setCurrentGenerationId(null);
+              try {
+                  localStorage.setItem('latestAnonStoryGeneration', result.story);
+                  console.log('Continued anonymous story part, saved to localStorage.');
+              } catch (storageError) {
+                  console.error("Error saving continued anonymous story to localStorage:", storageError);
+                  setError("Could not save the continued story locally. LocalStorage might be full or disabled.");
+              }
+         }
+
+        // --- Increment anon count on successful continuation ---
+        if (!user) {
+          try {
+            const currentCount = parseInt(localStorage.getItem(ANON_CONTINUE_COUNT_KEY) || '0', 10);
+            const newCount = currentCount + 1;
+            localStorage.setItem(ANON_CONTINUE_COUNT_KEY, newCount.toString());
+            console.log(`Anon continue count incremented to ${newCount}`);
+          } catch (e) {
+            console.error('Failed to increment anon continue count in localStorage:', e);
+          }
+        }
+        // --- End Increment ---
+
+        setProposalForDiff(null);
+        setDiffStartIndex(null);
+        setDiffEndIndex(null);
+      } else {
+        throw new Error('Invalid response format from API: Missing story content.');
+      }
+
+    } catch (err) {
+      console.error('Continue narrative request failed:', err);
+      setError(err instanceof Error ? err.message : 'An unknown error occurred during continuation.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // --- Calculate isAuthenticated ---
+  const isAuthenticated = user !== null;
+
   return (
     <main className={`flex min-h-screen flex-col justify-start p-4 sm:p-8 md:p-12 lg:p-24 bg-gradient-to-br from-gray-50 via-stone-50 to-slate-100 text-gray-800 font-sans transition-all duration-300`}>
        <PageHeader
@@ -837,6 +979,9 @@ export default function Home() {
               acceptStatus={acceptStatus}
               handleAccept={handleAccept}
               isAccepting={isAccepting}
+              handleContinueNarrative={handleContinueNarrative}
+              isLoading={isLoading}
+              isAuthenticated={isAuthenticated}
           />
         )}
 

@@ -351,8 +351,23 @@ export async function POST(request: Request) {
        if (!synopsis) {
          return NextResponse.json({ error: 'Missing synopsis for initial generation' }, { status: 400 });
       }
-       basePromptForDb = synopsis; // The synopsis is the core prompt
-       currentPromptText = `Flesh out the following synopsis into a story segment of approximately ${length} words. Adhere to the specified style. Incorporate web search results if relevant and helpful.\n\nStyle Note: ${effectiveStyleNote}\n\nSynopsis:\n${synopsis}\n\nStory Segment:`;
+
+       // --- Modification Start: Add previousPartContent to history for standalone continuation ---
+       if (previousPartContent) {
+           historyContents.push({ role: "model", parts: [{ text: previousPartContent }] });
+       }
+       // --- Modification End ---
+
+       // Determine the prompt based on whether it's initial or continuation
+       if (previousPartContent) {
+           // Standalone Continuation Prompt
+           basePromptForDb = partInstructions || 'Continue narrative'; // Use provided instructions or default
+           currentPromptText = `Continue the story based on the previous part. Adhere to the original style. Aim for this segment to be approximately ${length} words. Incorporate web search results if relevant and helpful.\n\nOriginal Style Note: ${effectiveStyleNote}\nOriginal Synopsis: ${synopsis}\n\nInstructions for this part:\n${partInstructions || 'Continue the narrative naturally from the previous part.'}\n\nNext Story Segment:`;
+       } else {
+           // Standalone Initial Generation Prompt
+           basePromptForDb = synopsis; // The synopsis is the core prompt for initial
+           currentPromptText = `Flesh out the following synopsis into a story segment of approximately ${length} words. Adhere to the specified style. Incorporate web search results if relevant and helpful.\n\nStyle Note: ${effectiveStyleNote}\n\nSynopsis:\n${synopsis}\n\nStory Segment:`;
+       }
     }
 
     const contents: Content[] = [
