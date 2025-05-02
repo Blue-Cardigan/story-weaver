@@ -169,7 +169,7 @@ export async function POST(request: Request) {
     }
 
     // --- Construct Final EditProposal ---
-    let finalProposal: EditProposal = {
+    const finalProposal: EditProposal = {
         type: llmProposal.type!, // Assert non-null based on prior validation
         explanation: llmProposal.explanation!, // Assert non-null
         text: llmProposal.text, // Keep optional text

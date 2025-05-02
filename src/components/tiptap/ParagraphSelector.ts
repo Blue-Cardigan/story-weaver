@@ -113,19 +113,17 @@ export const ParagraphSelector = Extension.create<ParagraphSelectorOptions>({
   },
 
   addProseMirrorPlugins() {
-    const extensionThis = this; // Reference to the extension instance for use inside plugin
-
     return [
       new Plugin({
         key: paragraphSelectorPluginKey,
         state: {
-          // Initialize plugin state (the DecorationSet)
-          init(_, state) { // state is editor state
+          // Use arrow function for init
+          init: (_, state) => { // state is editor state
             // Calculate initial decorations based on storage (which should be default empty set initially)
-            return DecorationSet.create(state.doc, calculateDecorations(state.doc, extensionThis.storage.selectedIndices as Set<number>));
+            return DecorationSet.create(state.doc, calculateDecorations(state.doc, this.storage.selectedIndices as Set<number>));
           },
-          // Apply transactions to the plugin state
-          apply(tr, oldSet, oldState, newState) {
+          // Use arrow function for apply
+          apply: (tr, oldSet, oldState, newState) => {
             // Check if our specific metadata is present OR if the document structure changed
             const updateReason = tr.getMeta(paragraphSelectorPluginKey);
             const selectionUpdated = updateReason?.type === 'SELECTION_UPDATED';
@@ -136,11 +134,11 @@ export const ParagraphSelector = Extension.create<ParagraphSelectorOptions>({
 
             if (needsRecalculation) {
                // Recalculate decorations using the current doc and indices from storage
-               set = DecorationSet.create(newState.doc, calculateDecorations(newState.doc, extensionThis.storage.selectedIndices as Set<number>));
+               set = DecorationSet.create(newState.doc, calculateDecorations(newState.doc, this.storage.selectedIndices as Set<number>));
 
                // If the selection was explicitly updated, notify the React component
                if (selectionUpdated) {
-                    extensionThis.options.onSelectionStorageChange(extensionThis.storage.selectedIndices as Set<number>);
+                    this.options.onSelectionStorageChange(this.storage.selectedIndices as Set<number>);
                }
             }
 
@@ -149,27 +147,28 @@ export const ParagraphSelector = Extension.create<ParagraphSelectorOptions>({
         },
         props: {
           // Provide the decorations to the editor view
-          decorations(state) {
+          decorations(state) { // 'this' here refers to the plugin props spec object, which is correct. No change needed.
             // Return the DecorationSet managed by this plugin's state
             return this.getState(state);
           },
           // Handle clicks directly on the editor view
           handleDOMEvents: {
+            // Use arrow function for mousedown
             mousedown: (view: EditorView, event: MouseEvent) => {
                 const target = event.target as HTMLElement;
                 // Find the closest element with paragraph-index data attribute (our bar)
-                const barElement = target.closest<HTMLElement>('[data-paragraph-index]'); // Updated variable name
+                const barElement = target.closest<HTMLElement>('[data-paragraph-index]');
 
-                if (barElement && barElement.dataset.paragraphIndex !== undefined) { // Updated variable name
+                if (barElement && barElement.dataset.paragraphIndex !== undefined) {
                     // We clicked a bar!
                     event.preventDefault();
                     event.stopPropagation();
 
-                    const index = parseInt(barElement.dataset.paragraphIndex, 10); // Updated variable name
+                    const index = parseInt(barElement.dataset.paragraphIndex, 10);
 
                     if (!isNaN(index)) {
-                        // Get the current selection directly from storage
-                        const currentIndices = new Set(extensionThis.storage.selectedIndices as Set<number>); // Added type assertion
+                        // Get the current selection directly from storage using lexically scoped 'this'
+                        const currentIndices = new Set(this.storage.selectedIndices as Set<number>); // Use 'this'
 
                         // Toggle the index
                         if (currentIndices.has(index)) {
@@ -178,8 +177,8 @@ export const ParagraphSelector = Extension.create<ParagraphSelectorOptions>({
                             currentIndices.add(index);
                         }
 
-                        // 1. Update the storage directly
-                        extensionThis.storage.selectedIndices = currentIndices;
+                        // 1. Update the storage directly using lexically scoped 'this'
+                        this.storage.selectedIndices = currentIndices; // Use 'this'
 
                         // 2. Dispatch a transaction with metadata to trigger the plugin's 'apply' method
                         const tr = view.state.tr.setMeta(paragraphSelectorPluginKey, { type: 'SELECTION_UPDATED' }); // Use existing key

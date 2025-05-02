@@ -262,7 +262,7 @@ export default function EditableText({
   if (proposalForDiff && diffStartIndex !== null && diffEndIndex !== null && handleAcceptProposal && handleRejectProposal) {
     // Extract original and proposed text based on proposal type
     let originalSegment = '';
-    let proposedText = proposalForDiff.text ?? '';
+    const proposedText = proposalForDiff.text ?? '';
 
     if (proposalForDiff.type === 'replace_all') {
         originalSegment = value; // Original is the entire current value
