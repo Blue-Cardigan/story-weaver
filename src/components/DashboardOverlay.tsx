@@ -304,27 +304,10 @@ export default function DashboardOverlay({
 
   const handleLoadStory = (story: Story) => {
     setActiveStoryId(story.id); // Set the active story ID in the parent (page.tsx)
-
-    // If it's a book, open the chapter planner instead of closing directly
-    if (story.structure_type === 'book') {
-        console.log("Dashboard: Loading book, opening chapter planner...");
-        setCurrentStoryForChapterGen({
-            id: story.id,
-            title: story.title ?? '',
-            global_synopsis: story.global_synopsis,
-            global_style_note: story.global_style_note,
-            global_additional_notes: story.global_additional_notes,
-            target_length: story.target_length,
-        });
-        setIsChapterGenOverlayOpen(true);
-        // Keep DashboardOverlay open underneath
-    } else {
-        // For short stories, load context into parent and close dashboard
-        setGlobalSynopsis(story.global_synopsis ?? null);
-        setGlobalStyleNote(story.global_style_note ?? null);
-        // TODO: Maybe load additional notes too if needed in main editor?
-        onClose(); 
-    }
+    setGlobalSynopsis(story.global_synopsis ?? null);
+    setGlobalStyleNote(story.global_style_note ?? null);
+    // TODO: Maybe load additional notes too if needed in main editor?
+    onClose(); 
   }
 
   if (!isOpen) return null;

@@ -17,7 +17,6 @@ interface StoryContentDisplayProps {
     isLoadingChapters: boolean;
     currentStoryParts: Database['public']['Tables']['story_generations']['Row'][];
     groupedStoryParts: GroupedStoryParts;
-    handleOpenEditChapterModal: (chapter: Database['public']['Tables']['chapters']['Row']) => void;
     storyPartsSavingStates: Record<string, { isLoading: boolean; error: string | null; success: boolean }>;
     handleStoryPartChange: (partId: string, newContent: string) => void;
     handleSaveChangesForPart: (partId: string) => Promise<void>;
@@ -30,7 +29,6 @@ const StoryContentDisplay: React.FC<StoryContentDisplayProps> = ({
     isLoadingChapters,
     currentStoryParts,
     groupedStoryParts,
-    handleOpenEditChapterModal,
     storyPartsSavingStates,
     handleStoryPartChange,
     handleSaveChangesForPart,
@@ -77,11 +75,6 @@ const StoryContentDisplay: React.FC<StoryContentDisplayProps> = ({
                                             <h3 className="text-lg font-semibold text-blue-700">
                                                 Chapter {chapter.chapter_number}{chapter.title ? `: ${chapter.title}` : ''}
                                             </h3>
-                                            <button
-                                                onClick={() => handleOpenEditChapterModal(chapter)}
-                                                className="ml-2 text-xs text-blue-600 hover:text-blue-800 p-1 rounded hover:bg-blue-100/50 transition-colors">
-                                                Edit
-                                            </button>
                                         </div>
                                         {(chapter.synopsis || chapter.style_notes || chapter.additional_notes) && (
                                             <details className="text-xs text-gray-700 space-y-1 pb-1 cursor-pointer group">

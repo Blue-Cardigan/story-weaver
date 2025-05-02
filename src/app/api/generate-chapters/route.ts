@@ -160,7 +160,7 @@ export async function POST(request: Request) {
     } else {
         // --- Initial Generation Prompt ---
         console.log("Constructing initial generation prompt...");
-        prompt = `You are an expert story planner. Based on the following overall story details, generate approximately ${numChapters} chapter outlines.`;
+        prompt = `You are an expert story planner. Based on the following overall story details, generate approximately ${numChapters} chapter outlines. Ensure each outline contains details about the chapter's setting, key events, character development, and thematic elements.`;
 
         if (targetBookLength && targetBookLength > 0) {
             prompt += ` The entire book is intended to be approximately ${targetBookLength.toLocaleString()} words long.`;
@@ -180,7 +180,7 @@ export async function POST(request: Request) {
         prompt += '    "title": "Whispers in the Dust",\n';
         prompt += '    "synopsis": "The chapter opens establishing the harsh, arid environment... Key events: ... Character development: ... Thematic elements: ...",\n';
         prompt += '    "style_notes": "Emphasize desolate atmosphere... Use internal monologue...",\n';
-        prompt += '    "additional_notes": "Ensure data cylinder feels ancient... Foreshadow factions..."\n';
+        prompt += '    "additional_notes": "Ensure data cylinder feels ancient... Foreshadow factions... Develop the theme of isolation introduced when..."\n';
         prompt += '  },\n';
         prompt += '  {\n';
         prompt += '    "title": "Shadows in the Market",\n';

@@ -6,7 +6,6 @@ import type { Database } from '@/types/supabase';
 import { User } from '@supabase/supabase-js';
 import AuthModal from '@/components/AuthModal';
 import DashboardOverlay from '@/components/DashboardOverlay';
-import EditChapterModal from '@/components/EditChapterModal';
 import type { ChapterUpdatePayload } from '@/components/EditChapterModal';
 import { v4 as uuidv4 } from 'uuid';
 import type { EditProposal, ContextParagraphData } from '@/types/chat';
@@ -53,6 +52,7 @@ export default function Home() {
   const [partInstructions, setPartInstructions] = useState('');
   const [length, setLength] = useState<number | ''>(500);
   const [useWebSearch, setUseWebSearch] = useState(false);
+  const [includeGlobalStyleNote, setIncludeGlobalStyleNote] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [generatedStory, setGeneratedStory] = useState<string | null>(null);
   const [currentGenerationId, setCurrentGenerationId] = useState<string | null>(null);
@@ -67,8 +67,6 @@ export default function Home() {
   const [clearSelectionsTrigger, setClearSelectionsTrigger] = useState(0);
 
   // --- State for Editing Chapters ---
-  const [isEditChapterModalOpen, setIsEditChapterModalOpen] = useState(false);
-  const [editingChapter, setEditingChapter] = useState<DbChapter | null>(null);
   const [isUpdatingChapter, setIsUpdatingChapter] = useState(false);
   const [updateChapterError, setUpdateChapterError] = useState<string | null>(null);
   // --- End Chapter Edit State ---
@@ -120,6 +118,14 @@ export default function Home() {
                setSynopsis('');
                setStyleNote('');
                setPartInstructions('');
+               setFetchedChapters([]);
+               setSelectedChapterId(null);
+               setIsLoadingChapters(false);
+               setChaptersError(null);
+               setIsAddingChapter(false);
+               setAddChapterError(null);
+               setIsUpdatingChapter(false);
+               setUpdateChapterError(null);
            }
        }
     });
@@ -197,8 +203,6 @@ export default function Home() {
     if (!effectiveIdentifier) return;
     setIsLoadingChapters(true);
     setChaptersError(null);
-    setFetchedChapters([]);
-    setSelectedChapterId(null);
     const headers: HeadersInit = {};
     const url = `/api/stories/${storyId}/chapters`;
     if (!user && anonUserIdentifier) {
@@ -214,6 +218,8 @@ export default function Home() {
     } catch (err) {
         console.error("Failed to fetch chapters:", err);
         setChaptersError(err instanceof Error ? err.message : 'Could not load chapters.');
+        setFetchedChapters([]);
+        setSelectedChapterId(null);
     } finally {
         setIsLoadingChapters(false);
     }
@@ -233,6 +239,11 @@ export default function Home() {
         setSelectedChapterId(null);
         setIsLoadingChapters(false);
         setChaptersError(null);
+        setAddChapterError(null);
+        setUpdateChapterError(null);
+        setIsAddingChapter(false);
+        setIsUpdatingChapter(false);
+        setIncludeGlobalStyleNote(true);
 
         await fetchStoryDetails(activeStoryId);
         await fetchStoryParts(activeStoryId);
@@ -257,6 +268,11 @@ export default function Home() {
       setProposalForDiff(null);
       setDiffStartIndex(null);
       setDiffEndIndex(null);
+      setAddChapterError(null);
+      setUpdateChapterError(null);
+      setIsAddingChapter(false);
+      setIsUpdatingChapter(false);
+      setIncludeGlobalStyleNote(true);
       resetAnonContinueCount();
     }
   }, [activeStoryId, effectiveIdentifier]);
@@ -269,7 +285,7 @@ export default function Home() {
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (authLoading || !effectiveIdentifier || isLoading) return;
+    if (authLoading || !effectiveIdentifier || isLoading || isUpdatingChapter) return;
 
     setIsLoading(true);
     setError(null);
@@ -288,17 +304,13 @@ export default function Home() {
         return;
     }
     const isBookMode = activeStoryDetails?.structure_type === 'book';
-    if (activeStoryId && isBookMode && !selectedChapterId && currentStoryParts.filter(p => p.chapter_id).length === 0) {
-        setError('Please select or add a chapter before generating the first part.');
+    if (activeStoryId && isBookMode && !selectedChapterId && currentStoryParts.some(p => p.chapter_id)) {
+        setError('Please select a chapter for the next part.');
         setIsLoading(false);
         return;
-    } else if (activeStoryId && isBookMode && !selectedChapterId) {
-         setError('Please select a chapter for the next part.');
-         setIsLoading(false);
-         return;
     }
     if (activeStoryId && !partInstructions.trim() && currentStoryParts.length === 0) {
-        setError('Please provide instructions for the next part.');
+        setError('Please provide instructions for the first part.');
         setIsLoading(false);
         return;
     }
@@ -318,15 +330,19 @@ export default function Home() {
         payload.partInstructions = partInstructions;
         payload.globalSynopsis = activeStoryDetails.global_synopsis;
         payload.globalStyleNote = activeStoryDetails.global_style_note;
+        payload.includeGlobalStyleNote = includeGlobalStyleNote;
         payload.storyTargetLength = activeStoryDetails.target_length;
 
         let lastPart: StoryGeneration | null = null;
+        let relevantParts = currentStoryParts;
         if (isBookMode && selectedChapterId) {
-            lastPart = [...currentStoryParts]
-                        .filter(p => p.chapter_id === selectedChapterId)
-                        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0] || null;
-        } else {
-            lastPart = currentStoryParts.length > 0 ? currentStoryParts[currentStoryParts.length - 1] : null;
+            relevantParts = currentStoryParts.filter(p => p.chapter_id === selectedChapterId);
+        } else if (isBookMode && !selectedChapterId) {
+            relevantParts = currentStoryParts.filter(p => !p.chapter_id);
+        }
+
+        if (relevantParts.length > 0) {
+             lastPart = [...relevantParts].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
         }
 
         const currentLength = currentStoryParts.reduce((sum, part) => {
@@ -437,12 +453,12 @@ export default function Home() {
     try {
       switch (type) {
         case 'replace_all':
-          if (proposal.text !== undefined) { // Ensure text is present for replace_all
+          if (proposal.text !== undefined) {
             updatedStory = proposal.text;
           } else {
             console.error("Error: 'replace_all' proposal missing text.");
             setError("Failed to apply proposal: Replacement text was missing.");
-            return; // Don't proceed if text is missing
+            return;
           }
           break;
         case 'replace':
@@ -468,7 +484,6 @@ export default function Home() {
           break;
         case 'clarification':
         case 'none':
-          // No text change needed, just clear the diff
           break;
         default:
           console.warn("Unhandled proposal type in handleAcceptProposal:", type);
@@ -476,23 +491,17 @@ export default function Home() {
       }
 
       setGeneratedStory(updatedStory);
-      // Clear the diff state after successful application
       setProposalForDiff(null);
       setDiffStartIndex(null);
       setDiffEndIndex(null);
-      setError(null); // Clear any previous errors
+      setError(null);
 
     } catch (e: any) {
       console.error("Error applying proposal:", e);
       setError(`Failed to apply proposal: ${e.message || 'Invalid proposal data'}`);
-      // Optionally clear diff state even on error, or leave it for debugging
-      // setProposalForDiff(null);
-      // setDiffStartIndex(null);
-      // setDiffEndIndex(null);
     }
   };
 
-  // Called when the InlineChat receives a proposal from the API
   const handleReceiveProposal = (proposal: EditProposal) => {
     if (!proposal) {
         setProposalForDiff(null);
@@ -501,44 +510,33 @@ export default function Home() {
         return;
     }
 
-    setProposalForDiff(proposal); // Store the full proposal
+    setProposalForDiff(proposal);
 
-    // Set indices for diff highlighting
     if (proposal.type === 'replace_all') {
-        // Highlight the entire original text for a full replacement diff
         setDiffStartIndex(0);
         setDiffEndIndex(generatedStory?.length ?? 0);
     } else if (proposal.startIndex !== undefined) {
         setDiffStartIndex(proposal.startIndex);
-        // For insert, endIndex might be undefined or same as startIndex for highlighting purposes
-        // For delete/replace, use the provided endIndex
         setDiffEndIndex(proposal.endIndex ?? proposal.startIndex);
     } else {
-        // No specific indices provided (e.g., clarification, none, or error in proposal)
         setDiffStartIndex(null);
         setDiffEndIndex(null);
     }
-    setError(null); // Clear previous errors when a new proposal arrives
+    setError(null);
   };
 
-  // Called when user clicks "Reject" in InlineChat
   const handleRejectProposal = () => {
-    // Clear the diff state
     setProposalForDiff(null);
     setDiffStartIndex(null);
     setDiffEndIndex(null);
-    setError(null); // Clear errors
+    setError(null);
   };
 
-  // Called when user clicks "New Chat" in InlineChat
   const handleNewChat = () => {
-    // Clear the diff state
     setProposalForDiff(null);
     setDiffStartIndex(null);
     setDiffEndIndex(null);
-    setError(null); // Clear errors
-    // Optionally clear context selections too?
-    // handleClearContextSelection();
+    setError(null);
   };
 
   const openAuthModal = () => setIsAuthModalOpen(true);
@@ -556,6 +554,7 @@ export default function Home() {
       setProposalForDiff(null);
       setDiffStartIndex(null);
       setDiffEndIndex(null);
+      setIncludeGlobalStyleNote(true);
       resetAnonContinueCount();
   };
 
@@ -609,7 +608,7 @@ export default function Home() {
   };
 
   const handleAddChapterClick = async () => {
-    if (!activeStoryId || !newChapterNumber || isAddingChapter) return;
+    if (!activeStoryId || !newChapterNumber || isAddingChapter || isUpdatingChapter) return;
 
     setIsAddingChapter(true);
     setAddChapterError(null);
@@ -643,19 +642,6 @@ export default function Home() {
     }
   };
 
-  // --- Chapter Edit Modal Handlers ---
-  const handleOpenEditChapterModal = (chapter: DbChapter) => {
-    setEditingChapter(chapter);
-    setUpdateChapterError(null);
-    setIsEditChapterModalOpen(true);
-  };
-
-  const handleCloseEditChapterModal = () => {
-    setIsEditChapterModalOpen(false);
-    setUpdateChapterError(null);
-    setEditingChapter(null); // Clear editing chapter on close
-  };
-
   const handleUpdateChapterSubmit = async (chapterId: string, formData: ChapterUpdatePayload) => {
     if (!activeStoryId || !effectiveIdentifier) {
         setUpdateChapterError("Cannot update chapter: Story or User identifier is missing.");
@@ -665,36 +651,31 @@ export default function Home() {
     setUpdateChapterError(null);
 
     const headers: HeadersInit = { 'Content-Type': 'application/json' };
-    const url = `/api/stories/${activeStoryId}/chapters/${chapterId}`; // Use specific chapter ID endpoint
+    const url = `/api/stories/${activeStoryId}/chapters/${chapterId}`;
     if (!user && anonUserIdentifier) { headers['X-User-Identifier'] = anonUserIdentifier; }
 
     try {
         const response = await fetch(url, {
-            method: 'PATCH', // Use PATCH method
+            method: 'PATCH',
             headers: headers,
             body: JSON.stringify(formData),
         });
         const result = await response.json();
         if (!response.ok) { throw new Error(result.error || `API request failed with status ${response.status}`); }
 
-        // Success
-        handleCloseEditChapterModal(); // Close modal on success
-        await fetchChapters(activeStoryId); // Refresh the chapter list
+        await fetchChapters(activeStoryId);
 
-        // Update selected chapter details if the currently selected one was edited
-        if (selectedChapterId === chapterId) {
-            setSelectedChapterId(chapterId); // Re-trigger useEffect or manually update if needed
-        }
+        return Promise.resolve();
 
     } catch (err) {
         console.error(`Page: Failed to update chapter ${chapterId}:`, err);
-        setUpdateChapterError(err instanceof Error ? err.message : 'An unknown error occurred during update.');
-        // Keep modal open on error
+        const errorMsg = err instanceof Error ? err.message : 'An unknown error occurred during update.';
+        setUpdateChapterError(errorMsg);
+        throw err;
     } finally {
         setIsUpdatingChapter(false);
     }
   };
-  // --- End Chapter Edit Modal Handlers ---
 
   const groupedStoryParts = useMemo(() => {
     if (!activeStoryDetails || currentStoryParts.length === 0) return {};
@@ -717,7 +698,7 @@ export default function Home() {
     });
 
     const sortedGroupKeys = [
-        ...fetchedChapters.map(ch => ch.id),
+        ...fetchedChapters.sort((a, b) => a.chapter_number - b.chapter_number).map(ch => ch.id),
         ...(groups['uncategorized'] ? ['uncategorized'] : [])
     ];
 
@@ -725,19 +706,16 @@ export default function Home() {
 
   }, [currentStoryParts, fetchedChapters, activeStoryDetails]);
 
-  // Handler for context selection changes from EditableText
   const handleContextSelection = useCallback((data: ContextParagraphData[]) => {
       console.log("Selected context paragraph data:", data);
       setSelectedContextData(data);
   }, []);
 
-  // Callback to clear context selection (passed to InlineChat AND EditableText)
   const handleClearContextSelection = useCallback(() => {
     setSelectedContextData([]);
-    setClearSelectionsTrigger(prev => prev + 1); // Increment the trigger
-  }, [setSelectedContextData]); // Add dependency
+    setClearSelectionsTrigger(prev => prev + 1);
+  }, [setSelectedContextData]);
 
-  // --- Function to reset anon continue count ---
   const resetAnonContinueCount = () => {
     try {
       localStorage.removeItem(ANON_CONTINUE_COUNT_KEY);
@@ -747,45 +725,33 @@ export default function Home() {
     }
   };
 
-  // --- Updated handleContinueNarrative ---
   const handleContinueNarrative = async () => {
-    // Check anonymous limit first
     if (!user) {
       try {
         const currentCount = parseInt(localStorage.getItem(ANON_CONTINUE_COUNT_KEY) || '0', 10);
         if (currentCount >= MAX_ANON_CONTINUES) {
           console.log(`Anon user reached continue limit (${currentCount}/${MAX_ANON_CONTINUES}). Prompting auth.`);
-          openAuthModal(); // Open the auth modal
-          // Optionally add a reason state to show a specific message in the modal
-          // setAuthReason('continue_limit');
-          return; // Stop execution
+          openAuthModal();
+          return;
         }
       } catch (e) {
         console.error('Failed to read anon continue count from localStorage:', e);
-        // Decide how to handle - proceed or block? Let's proceed but log error.
       }
     }
 
-    // Guard clauses (remain the same)
-    if (authLoading || !effectiveIdentifier || isLoading || !generatedStory || length === '' || length <= 0) {
-       console.warn("Continue narrative aborted due to missing data or loading state.", {
-           authLoading, effectiveIdentifier: !!effectiveIdentifier, isLoading, generatedStory: !!generatedStory, length
-       });
-       setError("Cannot continue narrative. Ensure you have generated text, set a valid length, and are not currently loading.");
+    if (authLoading || !effectiveIdentifier || isLoading || !generatedStory || length === '' || length <= 0 || isUpdatingChapter) {
+       console.warn("Continue narrative aborted.", { authLoading, effectiveIdentifier: !!effectiveIdentifier, isLoading, generatedStory: !!generatedStory, length, isUpdatingChapter });
+       setError("Cannot continue narrative. Ensure valid state.");
        return;
      }
-      // Additional check specific to continuing *within* a story context
      if (activeStoryId && !activeStoryDetails) {
        setError("Cannot continue narrative: Story details are not loaded yet.");
        return;
      }
-     // Check for standalone continuation context
      if (!activeStoryId && (!synopsis.trim() || !styleNote.trim())) {
-       setError("Cannot continue narrative without the original synopsis and style note for context.");
+       setError("Cannot continue narrative without original context.");
        return;
      }
-
-    // ... (rest of the setup: setIsLoading, clear state, build payload - remains the same) ...
     setIsLoading(true);
     setError(null);
     setCurrentGenerationId(null);
@@ -794,13 +760,14 @@ export default function Home() {
     const payload: any = {
       length,
       useWebSearch: false,
-      partInstructions: "Continue the narrative naturally from the previous part, maintaining the established style and tone.",
+      partInstructions: "Continue the narrative naturally...",
       previousPartContent: generatedStory,
     };
     if (activeStoryId && activeStoryDetails) {
         payload.storyId = activeStoryId;
         payload.globalSynopsis = activeStoryDetails.global_synopsis;
         payload.globalStyleNote = activeStoryDetails.global_style_note;
+        payload.includeGlobalStyleNote = includeGlobalStyleNote;
         payload.storyTargetLength = activeStoryDetails.target_length;
         const currentLength = currentStoryParts.reduce((sum, part) => {
             return sum + (part.generated_story?.split(/\s+/).filter(Boolean).length || 0);
@@ -824,7 +791,7 @@ export default function Home() {
         body: JSON.stringify(payload),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || `API request failed with status ${response.status}`);
+      if (!response.ok) throw new Error(result.error || `API request failed`);
 
       if (result.story) {
         setGeneratedStory(result.story);
@@ -835,14 +802,13 @@ export default function Home() {
               setCurrentGenerationId(null);
               try {
                   localStorage.setItem('latestAnonStoryGeneration', result.story);
-                  console.log('Continued anonymous story part, saved to localStorage.');
+                  console.log('Continued anonymous story, saved locally.');
               } catch (storageError) {
-                  console.error("Error saving continued anonymous story to localStorage:", storageError);
-                  setError("Could not save the continued story locally. LocalStorage might be full or disabled.");
+                  console.error("Error saving continued anon story:", storageError);
+                  setError("Could not save continued story locally.");
               }
          }
 
-        // --- Increment anon count on successful continuation ---
         if (!user) {
           try {
             const currentCount = parseInt(localStorage.getItem(ANON_CONTINUE_COUNT_KEY) || '0', 10);
@@ -850,27 +816,25 @@ export default function Home() {
             localStorage.setItem(ANON_CONTINUE_COUNT_KEY, newCount.toString());
             console.log(`Anon continue count incremented to ${newCount}`);
           } catch (e) {
-            console.error('Failed to increment anon continue count in localStorage:', e);
+            console.error('Failed to increment anon continue count:', e);
           }
         }
-        // --- End Increment ---
 
         setProposalForDiff(null);
         setDiffStartIndex(null);
         setDiffEndIndex(null);
       } else {
-        throw new Error('Invalid response format from API: Missing story content.');
+        throw new Error('Invalid response format.');
       }
 
     } catch (err) {
-      console.error('Continue narrative request failed:', err);
-      setError(err instanceof Error ? err.message : 'An unknown error occurred during continuation.');
+      console.error('Continue narrative failed:', err);
+      setError(err instanceof Error ? err.message : 'Unknown error during continuation.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // --- Calculate isAuthenticated ---
   const isAuthenticated = user !== null;
 
   return (
@@ -909,6 +873,8 @@ export default function Home() {
                 setLength={setLength}
                 useWebSearch={useWebSearch}
                 setUseWebSearch={setUseWebSearch}
+                includeGlobalStyleNote={includeGlobalStyleNote}
+                setIncludeGlobalStyleNote={setIncludeGlobalStyleNote}
                 isLoading={isLoading}
                 isAccepting={isAccepting}
                 isLoadingStoryDetails={isLoadingStoryDetails}
@@ -928,8 +894,9 @@ export default function Home() {
                 setNewChapterSynopsis={setNewChapterSynopsis}
                 addChapterError={addChapterError}
                 handleAddChapterClick={handleAddChapterClick}
-                handleOpenEditChapterModal={handleOpenEditChapterModal}
+                handleUpdateChapter={handleUpdateChapterSubmit}
                 isUpdatingChapter={isUpdatingChapter}
+                updateChapterError={updateChapterError}
                 currentStoryParts={currentStoryParts}
             />
         )}
@@ -1003,7 +970,6 @@ export default function Home() {
             isLoadingChapters={isLoadingChapters}
             currentStoryParts={currentStoryParts}
             groupedStoryParts={groupedStoryParts}
-            handleOpenEditChapterModal={handleOpenEditChapterModal}
             storyPartsSavingStates={storyPartsSavingStates}
             handleStoryPartChange={handleStoryPartChange}
             handleSaveChangesForPart={handleSaveChangesForPart}
@@ -1019,16 +985,6 @@ export default function Home() {
         setActiveStoryId={setActiveStoryId}
         setGlobalSynopsis={setGlobalSynopsis}
         setGlobalStyleNote={setGlobalStyleNote}
-      />
-
-      {/* Render the Edit Chapter Modal */}
-      <EditChapterModal 
-        isOpen={isEditChapterModalOpen}
-        onClose={handleCloseEditChapterModal}
-        chapter={editingChapter}
-        onSubmit={handleUpdateChapterSubmit}
-        isUpdating={isUpdatingChapter}
-        updateError={updateChapterError}
       />
     </main>
   );
